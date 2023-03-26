@@ -16,8 +16,8 @@ import numpy as np
 import paddle
 from configuration import BloomConfig
 from model_split_merge import merge_model_parallel
-# from modeling import BloomForGeneration
-from fuse_mt_modeling import BloomForGeneration
+from modeling import BloomForGeneration
+# from fuse_mt_modeling import BloomForGeneration
 from transformers import AutoTokenizer
 
 
@@ -91,9 +91,8 @@ class Predictor(object):
         # Load the model and parameter
         config.mp_degree = 1
         model = BloomForGeneration.from_pretrained(merge_model_path, config=config)
-        print("====== Start set_state_dict ==========")
-        model.bloom.set_state_dict(paddle.load(merge_model_path))
         model.eval()
+        model.bloom.set_state_dict(paddle.load(merge_model_path))
         return model
 
     def preprocess(self, input_text):

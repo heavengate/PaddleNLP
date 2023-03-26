@@ -1,3 +1,4 @@
+
 # coding=utf-8
 # Copyright 2022 HuggingFace Inc. team and BigScience workshop.
 #
@@ -48,13 +49,6 @@ from paddlenlp.utils.log import logger
 BLOOM_PRETRAINED_MODEL_ARCHIVE_LIST = [
     "bigscience/bloom-560m",
 ]
-
-def save_tensor(tensor, name):
-    data = tensor.cpu().numpy()
-    with open("base_{}.txt".format(name), 'w') as wf:
-        wf.write("{}\n".format(str(data.shape)))
-        for d in data.reshape((-1)):
-            wf.write("{:.8f}\n".format(d))
 
 
 def parallel_matmul(lm_output, logit_weights, parallel_output=True):
@@ -279,7 +273,6 @@ def bloom_gelu_back(g, x):
 
 
 def baddbmm(input, batch1, batch2, beta=1.0, alpha=1.0):
-    save_tensor(alpha * paddle.matmul(batch1, batch2), "qk_out")
     return beta * input + alpha * paddle.matmul(batch1, batch2)
 
 
@@ -368,7 +361,6 @@ class BloomAttention(nn.Layer):
         """
         batch_size, seq_length, three_times_hidden_size = fused_qkv.shape
         fused_qkv = fused_qkv.reshape([batch_size, seq_length, self.num_heads, 3, self.head_dim])
-        save_tensor(fused_qkv.transpose([0, 1, 3, 2, 4]), "fused_qkv")
         return fused_qkv[..., 0, :], fused_qkv[..., 1, :], fused_qkv[..., 2, :]
 
     def _merge_heads(self, x: Tensor) -> Tensor:
@@ -421,9 +413,6 @@ class BloomAttention(nn.Layer):
         value_layer = value_layer.transpose([0, 2, 1, 3]).reshape(
             [batch_size * self.num_heads, q_length, self.head_dim]
         )
-        save_tensor(query_layer, "query_layer")
-        save_tensor(key_layer.transpose([0, 2, 1]), "key_layer")
-        save_tensor(value_layer, "value_layer")
         if layer_past is not None:
             past_key, past_value = layer_past
             # concatenate along seq_length dimension:
@@ -441,8 +430,7 @@ class BloomAttention(nn.Layer):
 
         # [batch_size * num_heads, q_length, kv_length]
         # we use `Tensor.baddbmm` instead of `paddle.baddbmm` as the latter isn't supported by TorchScript v1.11
-        print("q_length", q_length, "kv_length", kv_length)
-        print("use_cache", use_cache, "query shape", query_layer.shape, "key shape", key_layer.shape)
+        print("alibi shape", alibi.shape)
         attention_scores = baddbmm(
             alibi, batch1=query_layer, batch2=key_layer, beta=self.beta, alpha=self.inv_norm_factor
         )
@@ -454,7 +442,7 @@ class BloomAttention(nn.Layer):
         # cast attention scores to fp32, compute scaled softmax and cast back to initial dtype - [batch_size, num_heads, q_length, kv_length]
         input_dtype = attention_scores.dtype
         # `float16` has a minimum value of -65504.0, whereas `bfloat16` and `float32` have a minimum value of `-3.4e+38`
-        # print("attention_mask", attention_mask)
+        print("attention_mask", attention_mask.shape)
         if self.config.use_pure_fp16:
             with paddle.amp.auto_cast(False):
                 if input_dtype == paddle.float16:
@@ -470,9 +458,9 @@ class BloomAttention(nn.Layer):
             attention_probs = paddle.cast(F.softmax(attn_weights, axis=-1, dtype=paddle.float32), dtype=input_dtype)
 
         # [batch_size, num_heads, q_length, kv_length]
-        save_tensor(attention_probs, "attention_probs")
         attention_probs = self.attention_dropout(attention_probs)
 
+        print("head_mask", head_mask)
         if head_mask is not None:
             attention_probs = attention_probs * head_mask
 
@@ -561,7 +549,6 @@ class BloomBlock(nn.Layer):
 
         self.apply_residual_connection_post_layernorm = config.apply_residual_connection_post_layernorm
         self.hidden_dropout = config.hidden_dropout
-        self.layer_number = layer_number
 
     def forward(
         self,
@@ -577,7 +564,6 @@ class BloomBlock(nn.Layer):
 
         # Layer norm at the beginning of the transformer layer.
         layernorm_output = self.input_layernorm(hidden_states)
-        save_tensor(layernorm_output, "LN_out")
 
         # Layer norm post the self attention.
         if self.apply_residual_connection_post_layernorm:
@@ -779,8 +765,39 @@ class BloomModel(BloomPreTrainedModel):
 
         # Transformer blocks
         # self.h = nn.LayerList([BloomBlock(config, layer_number=i) for i in range(config.n_layer)])
-        self.h = nn.LayerList([BloomBlock(config, layer_number=i) for i in range(1)])
-        # self.transformer_block = FusedMultiTransformer(self.embed_dim, self.n_head, 4 * self.embed_dim, activation="geglu", num_layers=config.n_layer)
+        ln_scale_attrs = [paddle.ParamAttr(name="fusemt.{}.ln_scale".format(i)) for i in range(config.n_layer)]
+        ln_bias_attrs = [paddle.ParamAttr(name="fusemt.{}.ln_bias".format(i)) for i in range(config.n_layer)]
+        qkv_weight_attrs = [paddle.ParamAttr(name="fusemt.{}.qkv_weight".format(i)) for i in range(config.n_layer)]
+        qkv_bias_attrs = [paddle.ParamAttr(name="fusemt.{}.qkv_bias".format(i)) for i in range(config.n_layer)]
+        linear_weight_attrs = [paddle.ParamAttr(name="fusemt.{}.linear_weight".format(i)) for i in range(config.n_layer)]
+        linear_bias_attrs = [paddle.ParamAttr(name="fusemt.{}.linear_bias".format(i)) for i in range(config.n_layer)]
+        ffn_ln_scale_attrs = [paddle.ParamAttr(name="fusemt.{}.ffn_ln_scale".format(i)) for i in range(config.n_layer)]
+        ffn_ln_bias_attrs = [paddle.ParamAttr(name="fusemt.{}.ffn_ln_bias".format(i)) for i in range(config.n_layer)]
+        ffn1_weight_attrs = [paddle.ParamAttr(name="fusemt.{}.ffn1_weight".format(i)) for i in range(config.n_layer)]
+        ffn1_bias_attrs = [paddle.ParamAttr(name="fusemt.{}.ffn1_bias".format(i)) for i in range(config.n_layer)]
+        ffn2_weight_attrs = [paddle.ParamAttr(name="fusemt.{}.ffn2_weight".format(i)) for i in range(config.n_layer)]
+        ffn2_bias_attrs = [paddle.ParamAttr(name="fusemt.{}.ffn2_bias".format(i)) for i in range(config.n_layer)]
+        self.transformer_block = FusedMultiTransformer(
+                                    self.embed_dim,
+                                    self.n_head,
+                                    4 * self.embed_dim,
+                                    activation="gelu",
+                                    num_layers=config.n_layer,
+                                    ln_scale_attrs=ln_scale_attrs,
+                                    ln_bias_attrs=ln_bias_attrs,
+                                    qkv_weight_attrs=qkv_weight_attrs,
+                                    qkv_bias_attrs=qkv_bias_attrs,
+                                    linear_weight_attrs=linear_weight_attrs,
+                                    linear_bias_attrs=linear_bias_attrs,
+                                    ffn_ln_scale_attrs=ffn_ln_scale_attrs,
+                                    ffn_ln_bias_attrs=ffn_ln_bias_attrs,
+                                    ffn1_weight_attrs=ffn1_weight_attrs,
+                                    ffn1_bias_attrs=ffn1_bias_attrs,
+                                    ffn2_weight_attrs=ffn2_weight_attrs,
+                                    ffn2_bias_attrs=ffn2_bias_attrs
+                                    )
+        # print("parameters", dict(self.transformer_block.named_parameters()).keys())
+        self.cache_kvs = []
 
         # Final Layer Norm
         self.ln_f = nn.LayerNorm(self.embed_dim, epsilon=config.layer_norm_epsilon)
@@ -853,6 +870,20 @@ class BloomModel(BloomPreTrainedModel):
         return_dict=None,
         **kwargs,
     ) -> Union[Tuple[Tensor], BaseModelOutputWithPastAndCrossAttentions]:
+
+        # Transformer cache kv
+        if len(self.cache_kvs) == 0:
+            max_seq_len = 1024
+            self.cache_kvs = [
+                    paddle.fluid.layers.fill_constant_batch_size_like(
+                        input_ids,
+                        shape=[2, -1, self.config.n_head // self.config.mp_degree,
+                               max_seq_len, self.embed_dim // self.config.n_head],
+                        input_dim_idx=0,
+                        output_dim_idx=1,
+                        value=0.,
+                        dtype="float32") for _ in range(self.config.n_layer)]
+
         past_key_values = kwargs.get("cache", past_key_values)
 
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
@@ -893,9 +924,9 @@ class BloomModel(BloomPreTrainedModel):
         seq_length_with_past = seq_length
         past_key_values_length = 0
         if past_key_values[0] is not None:
-            past_key_values_length = past_key_values[0][0].shape[2]
-            seq_length_with_past = seq_length_with_past + past_key_values_length
-        print("seq_length", seq_length, past_key_values_length)
+            # past_key_values_length = past_key_values[0][0].shape[2]
+            # seq_length_with_past = seq_length_with_past + past_key_values_length
+            seq_length_with_past = attention_mask.shape[-1]
 
         if attention_mask is None:
             if input_ids is not None:
@@ -915,47 +946,49 @@ class BloomModel(BloomPreTrainedModel):
                 paddle.repeat_interleave(paddle.cast(causal_mask, "int32"), block_size, axis=0), "bool"
             )
         else:
-            print("alibi seq_length_with_past", seq_length_with_past, alibi.shape)
             alibi = alibi.reshape([batch_size * self.config.n_head, 1, seq_length_with_past])
             causal_mask = paddle.cast(
                 paddle.repeat_interleave(paddle.cast(causal_mask, "int32"), self.config.n_head, axis=0), "bool"
             )
 
-        # print("causal_mask", causal_mask)
-        # print("alibi", alibi)
-        save_tensor(hidden_states, "input")
-        for i, (block, layer_past) in enumerate(zip(self.h, past_key_values)):
-            if output_hidden_states:
-                all_hidden_states = all_hidden_states + (hidden_states,)
+        alibi = alibi.expand([batch_size * self.config.n_head, seq_length_with_past, seq_length_with_past])
+        attn_mask = (1. - paddle.cast(causal_mask, "float32")) * -60000. + alibi
+        print("kwargs", kwargs.keys())
+        print("transformer input", hidden_states)
+        hidden_states, presents = self.transformer_block(hidden_states, attn_mask=attn_mask, caches=self.cache_kvs, time_step=kwargs.get("time_step", None))
 
-            if self.config.use_recompute:
-                outputs = self.recompute_training(
-                    block,
-                    hidden_states,
-                    layer_past=layer_past,
-                    attention_mask=causal_mask,
-                    head_mask=head_mask[i],
-                    use_cache=use_cache,
-                    output_attentions=output_attentions,
-                    alibi=alibi,
-                )
-            else:
-                outputs = block(
-                    hidden_states,
-                    layer_past=layer_past,
-                    attention_mask=causal_mask,
-                    head_mask=head_mask[i],
-                    use_cache=use_cache,
-                    output_attentions=output_attentions,
-                    alibi=alibi,
-                )
-
-            hidden_states = outputs[0]
-            if use_cache is True:
-                presents = presents + (outputs[1],)
-
-            if output_attentions:
-                all_self_attentions = all_self_attentions + (outputs[2 if use_cache else 1],)
+        # for i, (block, layer_past) in enumerate(zip(self.h, past_key_values)):
+        #     if output_hidden_states:
+        #         all_hidden_states = all_hidden_states + (hidden_states,)
+        #
+        #     if self.config.use_recompute:
+        #         outputs = self.recompute_training(
+        #             block,
+        #             hidden_states,
+        #             layer_past=layer_past,
+        #             attention_mask=causal_mask,
+        #             head_mask=head_mask[i],
+        #             use_cache=use_cache,
+        #             output_attentions=output_attentions,
+        #             alibi=alibi,
+        #         )
+        #     else:
+        #         outputs = block(
+        #             hidden_states,
+        #             layer_past=layer_past,
+        #             attention_mask=causal_mask,
+        #             head_mask=head_mask[i],
+        #             use_cache=use_cache,
+        #             output_attentions=output_attentions,
+        #             alibi=alibi,
+        #         )
+        #
+        #     hidden_states = outputs[0]
+        #     if use_cache is True:
+        #         presents = presents + (outputs[1],)
+        #
+        #     if output_attentions:
+        #         all_self_attentions = all_self_attentions + (outputs[2 if use_cache else 1],)
 
         # Add last hidden state
         hidden_states = self.ln_f(hidden_states)
@@ -963,7 +996,6 @@ class BloomModel(BloomPreTrainedModel):
         if output_hidden_states:
             all_hidden_states = all_hidden_states + (hidden_states,)
 
-        # print("presents", presents)
         if not return_dict:
             return tuple(v for v in [hidden_states, presents, all_hidden_states, all_self_attentions] if v is not None)
 
@@ -973,6 +1005,48 @@ class BloomModel(BloomPreTrainedModel):
             hidden_states=all_hidden_states,
             attentions=all_self_attentions,
         )
+
+    @paddle.no_grad()
+    def set_state_dict(self, state_dict, use_structured_name=True):
+        print("FuseMT set_state_dict enter")
+        new_state_dict = {}
+        for k, v in state_dict.items():
+            if not k.startswith("bloom.h."):
+                new_state_dict[k] = v
+                continue
+
+            idx = k.split(".")[2]
+            if k.endswith("input_layernorm.weight"):
+                new_state_dict["fusemt.{}.ln_scale".format(idx)] = v
+            elif k.endswith("input_layernorm.bias"):
+                new_state_dict["fusemt.{}.ln_bias".format(idx)] = v
+            elif k.endswith("self_attention.query_key_value.weight"):
+                # new_state_dict["fusemt.{}.qkv_weight".format(idx)] = v.transpose([1, 0]).reshape([3, self.n_head // self.mp_degree, self.embed_dim // self.n_head, self.hidden_size])
+                new_state_dict["fusemt.{}.qkv_weight".format(idx)] = v.reshape([self.embed_dim, self.n_head // self.mp_degree, 3, self.embed_dim // self.n_head]).transpose([2, 1, 3, 0])
+            elif k.endswith("self_attention.query_key_value.bias"):
+                # new_state_dict["fusemt.{}.qkv_bias".format(idx)] = v.reshape([3, self.n_head // self.mp_degree, self.hidden_size // self.n_head])
+                new_state_dict["fusemt.{}.qkv_bias".format(idx)] = v.reshape([self.n_head // self.mp_degree, 3, self.hidden_size // self.n_head]).transpose([1, 0, 2])
+            elif k.endswith("self_attention.dense.weight"):
+                new_state_dict["fusemt.{}.linear_weight".format(idx)] = v
+            elif k.endswith("self_attention.dense.bias"):
+                new_state_dict["fusemt.{}.linear_bias".format(idx)] = v
+            elif k.endswith("post_attention_layernorm.weight"):
+                new_state_dict["fusemt.{}.ffn_ln_scale".format(idx)] = v
+            elif k.endswith("post_attention_layernorm.bias"):
+                new_state_dict["fusemt.{}.ffn_ln_bias".format(idx)] = v
+            elif k.endswith("mlp.dense_h_to_4h.weight"):
+                new_state_dict["fusemt.{}.ffn1_weight".format(idx)] = v
+            elif k.endswith("mlp.dense_h_to_4h.bias"):
+                new_state_dict["fusemt.{}.ffn1_bias".format(idx)] = v
+            elif k.endswith("mlp.dense_4h_to_h.weight"):
+                new_state_dict["fusemt.{}.ffn2_weight".format(idx)] = v
+            elif k.endswith("mlp.dense_4h_to_h.bias"):
+                new_state_dict["fusemt.{}.ffn2_bias".format(idx)] = v
+            else:
+                raise ValueError("Unknow weight {}".format(k))
+
+        print("new_state_dict", new_state_dict.keys())
+        super().set_state_dict(new_state_dict, False)
 
 
 class BloomLMHead(nn.Layer):
@@ -1576,6 +1650,9 @@ class BloomForGeneration(BloomPreTrainedModel):
 
         # used for compute on gpu, avoid memcpy D2H
         cur_len_gpu = paddle.full([1], cur_len)
+        
+        # time step for decoder
+        time_step = paddle.to_tensor([1], dtype='int32', place=paddle.CPUPlace())
 
         origin_len = paddle.shape(input_ids)[1]
         # used for compute on gpu, avoid memcpy D2H
@@ -1669,7 +1746,6 @@ class BloomForGeneration(BloomPreTrainedModel):
         # Note(GuoxiaWang):Pre-while call for inference, simulate a do while loop statement
         # the value in model_kwargs should be tensor before while loop
         outputs = _forward_(**model_kwargs)
-        # print("outputs", outputs)
 
         input_ids, scores, unfinished_flag, model_kwargs = _post_process_(
             outputs, input_ids, cur_len_gpu, origin_len_gpu, scores, unfinished_flag, model_kwargs
@@ -1680,14 +1756,15 @@ class BloomForGeneration(BloomPreTrainedModel):
             # Note(ZhenyuLi): Avoid the synchronization caused by scale in dy2static
             paddle.increment(cur_len)
         paddle.increment(cur_len_gpu)
-        return
 
         attn_mask = model_kwargs["attention_mask"]
         # make the shape of attention_mask = (-1, -1, -1, -1) in dy2static.
         model_kwargs["attention_mask"] = paddle.reshape(attn_mask, paddle.shape(attn_mask))
         model_kwargs["cache"] = outputs[1] if isinstance(outputs, tuple) else None
-        # print("model_kwargs", model_kwargs)
+        immutable["time_step"] = time_step
+        print("time_step", time_step)
         max_length = paddle.to_tensor(max_length)
+        # return
         while cur_len < max_length:
             # Note(GuoxiaWang): Remove outputs = _forward_(**model_kwargs)
             # and change it to pass directly to _post_process_ to avoid
@@ -1701,6 +1778,8 @@ class BloomForGeneration(BloomPreTrainedModel):
                 unfinished_flag,
                 model_kwargs,
             )
+
+            paddle.increment(time_step)
             if not self.inference:
                 cur_len += 1
             else:

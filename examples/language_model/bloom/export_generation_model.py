@@ -18,7 +18,8 @@ import os
 import paddle
 from configuration import BloomConfig
 from model_split_merge import merge_model_parallel
-from modeling import BloomForGeneration
+# from modeling import BloomForGeneration
+from fuse_mt_modeling import BloomForGeneration
 from transformers import AutoTokenizer
 
 MODEL_CLASSES = {"bigscience/bloom-560m": (BloomForGeneration)}
@@ -78,6 +79,7 @@ def main():
     # Load the model and parameter
     config.mp_degree = 1
     model = model_class.from_pretrained(merge_model_path, config=config)
+    model.bloom.set_state_dict(paddle.load(merge_model_path))
 
     model.eval()
     model = paddle.jit.to_static(
