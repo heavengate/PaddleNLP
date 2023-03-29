@@ -92,7 +92,6 @@ class Predictor(object):
         config.mp_degree = 1
         model = BloomForGeneration.from_pretrained(merge_model_path, config=config)
         model.eval()
-        model.bloom.set_state_dict(paddle.load(merge_model_path))
         return model
 
     def preprocess(self, input_text):

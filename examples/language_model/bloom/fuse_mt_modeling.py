@@ -951,9 +951,10 @@ class BloomModel(BloomPreTrainedModel):
                 paddle.repeat_interleave(paddle.cast(causal_mask, "int32"), self.config.n_head, axis=0), "bool"
             )
 
-        alibi = alibi.expand([batch_size * self.config.n_head, seq_length_with_past, seq_length_with_past])
-        attn_mask = (1. - paddle.cast(causal_mask, "float32")) * -60000. + alibi
-        print("kwargs", kwargs.keys())
+        alibi = alibi.expand([batch_size * self.config.n_head, seq_length, seq_length_with_past])
+        print("alibi shape", alibi.shape)
+        attn_mask = alibi + paddle.cast(causal_mask, "float32") * -3e38
+        print("attn_mask shape", attn_mask.shape)
         print("transformer input", hidden_states)
         hidden_states, presents = self.transformer_block(hidden_states, attn_mask=attn_mask, caches=self.cache_kvs, time_step=kwargs.get("time_step", None))
 
@@ -1723,7 +1724,8 @@ class BloomForGeneration(BloomPreTrainedModel):
                     probs = TopPProcess(probs, top_p, min_tokens_to_keep)
 
             if not self.use_topp_sampling:
-                next_tokens = paddle.multinomial(probs)
+                # next_tokens = paddle.multinomial(probs)
+                _, next_tokens = paddle.topk(probs, 1)
 
             next_scores = paddle.index_sample(origin_probs, next_tokens)
 

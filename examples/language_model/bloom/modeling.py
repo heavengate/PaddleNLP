@@ -421,9 +421,9 @@ class BloomAttention(nn.Layer):
         value_layer = value_layer.transpose([0, 2, 1, 3]).reshape(
             [batch_size * self.num_heads, q_length, self.head_dim]
         )
-        save_tensor(query_layer, "query_layer")
-        save_tensor(key_layer.transpose([0, 2, 1]), "key_layer")
-        save_tensor(value_layer, "value_layer")
+        # save_tensor(query_layer, "query_layer")
+        # save_tensor(key_layer.transpose([0, 2, 1]), "key_layer")
+        # save_tensor(value_layer, "value_layer")
         if layer_past is not None:
             past_key, past_value = layer_past
             # concatenate along seq_length dimension:
@@ -439,38 +439,48 @@ class BloomAttention(nn.Layer):
         else:
             present = None
 
-        # [batch_size * num_heads, q_length, kv_length]
-        # we use `Tensor.baddbmm` instead of `paddle.baddbmm` as the latter isn't supported by TorchScript v1.11
-        print("q_length", q_length, "kv_length", kv_length)
-        print("use_cache", use_cache, "query shape", query_layer.shape, "key shape", key_layer.shape)
-        attention_scores = baddbmm(
-            alibi, batch1=query_layer, batch2=key_layer, beta=self.beta, alpha=self.inv_norm_factor
-        )
-        print("attention_scores shape", attention_scores.shape)
+        if q_length > 1:
+            alibi = alibi.expand([batch_size * self.config.n_head, q_length, kv_length])
+            print("expand alibi shape", alibi.shape)
+        attn_mask = alibi + paddle.cast(attention_mask, "float32") * -3e38
+        print("attn_mask shape", attn_mask.shape)
 
-        # change view to [batch_size, num_heads, q_length, kv_length]
-        # attention_scores = matmul_result.reshape([batch_size, self.num_heads, q_length, kv_length])
+        qk = self.inv_norm_factor * paddle.matmul(query_layer, key_layer)
+        attention_scores = qk + attn_mask
+        attention_probs = paddle.cast(F.softmax(attention_scores, axis=-1, dtype=paddle.float32), dtype=qk.dtype)
 
-        # cast attention scores to fp32, compute scaled softmax and cast back to initial dtype - [batch_size, num_heads, q_length, kv_length]
-        input_dtype = attention_scores.dtype
-        # `float16` has a minimum value of -65504.0, whereas `bfloat16` and `float32` have a minimum value of `-3.4e+38`
-        # print("attention_mask", attention_mask)
-        if self.config.use_pure_fp16:
-            with paddle.amp.auto_cast(False):
-                if input_dtype == paddle.float16:
-                    attention_scores = paddle.cast(attention_scores, paddle.float32)
-                attn_weights = masked_fill(attention_scores, attention_mask, finfo(attention_scores.dtype).min)
-                attention_probs = paddle.cast(
-                    F.softmax(attn_weights, axis=-1, dtype=paddle.float32), dtype=input_dtype
-                )
-        else:
-            if input_dtype == paddle.float16:
-                attention_scores = paddle.cast(attention_scores, paddle.float32)
-            attn_weights = masked_fill(attention_scores, attention_mask, finfo(attention_scores.dtype).min)
-            attention_probs = paddle.cast(F.softmax(attn_weights, axis=-1, dtype=paddle.float32), dtype=input_dtype)
+        # # [batch_size * num_heads, q_length, kv_length]
+        # # we use `Tensor.baddbmm` instead of `paddle.baddbmm` as the latter isn't supported by TorchScript v1.11
+        # print("q_length", q_length, "kv_length", kv_length)
+        # print("use_cache", use_cache, "query shape", query_layer.shape, "key shape", key_layer.shape)
+        # attention_scores = baddbmm(
+        #     alibi, batch1=query_layer, batch2=key_layer, beta=self.beta, alpha=self.inv_norm_factor
+        # )
+        # print("attention_scores shape", attention_scores.shape)
+        #
+        # # change view to [batch_size, num_heads, q_length, kv_length]
+        # # attention_scores = matmul_result.reshape([batch_size, self.num_heads, q_length, kv_length])
+        #
+        # # cast attention scores to fp32, compute scaled softmax and cast back to initial dtype - [batch_size, num_heads, q_length, kv_length]
+        # input_dtype = attention_scores.dtype
+        # # `float16` has a minimum value of -65504.0, whereas `bfloat16` and `float32` have a minimum value of `-3.4e+38`
+        # # print("attention_mask", attention_mask)
+        # if self.config.use_pure_fp16:
+        #     with paddle.amp.auto_cast(False):
+        #         if input_dtype == paddle.float16:
+        #             attention_scores = paddle.cast(attention_scores, paddle.float32)
+        #         attn_weights = masked_fill(attention_scores, attention_mask, finfo(attention_scores.dtype).min)
+        #         attention_probs = paddle.cast(
+        #             F.softmax(attn_weights, axis=-1, dtype=paddle.float32), dtype=input_dtype
+        #         )
+        # else:
+        #     if input_dtype == paddle.float16:
+        #         attention_scores = paddle.cast(attention_scores, paddle.float32)
+        #     attn_weights = masked_fill(attention_scores, attention_mask, finfo(attention_scores.dtype).min)
+        #     attention_probs = paddle.cast(F.softmax(attn_weights, axis=-1, dtype=paddle.float32), dtype=input_dtype)
 
         # [batch_size, num_heads, q_length, kv_length]
-        save_tensor(attention_probs, "attention_probs")
+        save_tensor(attention_probs, "attention_probs_{}".format(kv_length))
         attention_probs = self.attention_dropout(attention_probs)
 
         if head_mask is not None:
@@ -484,6 +494,7 @@ class BloomAttention(nn.Layer):
 
         # change view [batch_size, num_heads, q_length, head_dim]
         context_layer = self._merge_heads(context_layer)
+        save_tensor(context_layer, "fmha_out")
 
         # aggregate results across tp ranks. See here: https://github.com/pypaddle/pypaddle/issues/76232
         if self.pretraining_tp > 1 and self.slow_but_exact:
@@ -529,7 +540,10 @@ class BloomMLP(nn.Layer):
         self.gelu_impl = BloomGelu()
 
     def forward(self, hidden_states, residual):
+        # hidden_states = self.dense_h_to_4h(hidden_states)
+        # hidden_states = self.gelu_impl(hidden_states)
         hidden_states = self.gelu_impl(self.dense_h_to_4h(hidden_states))
+        save_tensor(hidden_states, "ffn1_out")
 
         if self.pretraining_tp > 1 and self.slow_but_exact:
             intermediate_output = paddle.zeros_like(residual)
@@ -577,7 +591,7 @@ class BloomBlock(nn.Layer):
 
         # Layer norm at the beginning of the transformer layer.
         layernorm_output = self.input_layernorm(hidden_states)
-        save_tensor(layernorm_output, "LN_out")
+        save_tensor(layernorm_output, "ln_out_{}".format(self.layer_number))
 
         # Layer norm post the self attention.
         if self.apply_residual_connection_post_layernorm:
@@ -602,6 +616,7 @@ class BloomBlock(nn.Layer):
         outputs = attn_outputs[1:]
 
         layernorm_output = self.post_attention_layernorm(attention_output)
+        save_tensor(layernorm_output, "ffn_ln_out")
 
         # Get residual
         if self.apply_residual_connection_post_layernorm:
@@ -778,8 +793,8 @@ class BloomModel(BloomPreTrainedModel):
         self.word_embeddings_layernorm = nn.LayerNorm(self.embed_dim, epsilon=config.layer_norm_epsilon)
 
         # Transformer blocks
-        # self.h = nn.LayerList([BloomBlock(config, layer_number=i) for i in range(config.n_layer)])
-        self.h = nn.LayerList([BloomBlock(config, layer_number=i) for i in range(1)])
+        self.h = nn.LayerList([BloomBlock(config, layer_number=i) for i in range(config.n_layer)])
+        # self.h = nn.LayerList([BloomBlock(config, layer_number=i) for i in range(1)])
         # self.transformer_block = FusedMultiTransformer(self.embed_dim, self.n_head, 4 * self.embed_dim, activation="geglu", num_layers=config.n_layer)
 
         # Final Layer Norm
@@ -1646,7 +1661,8 @@ class BloomForGeneration(BloomPreTrainedModel):
                     probs = TopPProcess(probs, top_p, min_tokens_to_keep)
 
             if not self.use_topp_sampling:
-                next_tokens = paddle.multinomial(probs)
+                # next_tokens = paddle.multinomial(probs)
+                _, next_tokens = paddle.topk(probs, 1)
 
             next_scores = paddle.index_sample(origin_probs, next_tokens)
 
@@ -1680,7 +1696,7 @@ class BloomForGeneration(BloomPreTrainedModel):
             # Note(ZhenyuLi): Avoid the synchronization caused by scale in dy2static
             paddle.increment(cur_len)
         paddle.increment(cur_len_gpu)
-        return
+        # return
 
         attn_mask = model_kwargs["attention_mask"]
         # make the shape of attention_mask = (-1, -1, -1, -1) in dy2static.
@@ -1701,6 +1717,7 @@ class BloomForGeneration(BloomPreTrainedModel):
                 unfinished_flag,
                 model_kwargs,
             )
+            break
             if not self.inference:
                 cur_len += 1
             else:
