@@ -956,7 +956,8 @@ class BloomModel(BloomPreTrainedModel):
         print("attn_mask shape", attn_mask.shape)
         # print("transformer input", hidden_states)
         is_decoder = kwargs.get("is_decoder", False)
-        hidden_states, presents = self.transformer_block(hidden_states, attn_mask=attn_mask, caches=self.cache_kvs, time_step=paddle.to_tensor(attn_mask.shape[-1] - 1, dtype="int32", place=paddle.CPUPlace()) if is_decoder else None)
+        hidden_states, presents = self.transformer_block(hidden_states, attn_mask=attn_mask, caches=self.cache_kvs, time_step=paddle.shape(attn_mask)[-1] - 1 if is_decoder else None)
+        # hidden_states, presents = self.transformer_block(hidden_states, attn_mask=attn_mask, caches=self.cache_kvs, time_step=paddle.to_tensor(attn_mask.shape[-1] - 1, dtype="int32", place=paddle.CPUPlace()) if is_decoder else None)
 
         # for i, (block, layer_past) in enumerate(zip(self.h, past_key_values)):
         #     if output_hidden_states:
