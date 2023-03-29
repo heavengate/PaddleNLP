@@ -421,9 +421,9 @@ class BloomAttention(nn.Layer):
         value_layer = value_layer.transpose([0, 2, 1, 3]).reshape(
             [batch_size * self.num_heads, q_length, self.head_dim]
         )
-        # save_tensor(query_layer, "query_layer")
-        # save_tensor(key_layer.transpose([0, 2, 1]), "key_layer")
-        # save_tensor(value_layer, "value_layer")
+        save_tensor(query_layer, "query_layer_{}".format(self.layer_number))
+        save_tensor(key_layer.transpose([0, 2, 1]), "key_layer_{}".format(self.layer_number))
+        save_tensor(value_layer, "value_layer_{}".format(self.layer_number))
         if layer_past is not None:
             past_key, past_value = layer_past
             # concatenate along seq_length dimension:
@@ -443,7 +443,7 @@ class BloomAttention(nn.Layer):
             alibi = alibi.expand([batch_size * self.config.n_head, q_length, kv_length])
             print("expand alibi shape", alibi.shape)
         attn_mask = alibi + paddle.cast(attention_mask, "float32") * -3e38
-        print("attn_mask shape", attn_mask.shape)
+        print("attn_mask", attn_mask)
 
         qk = self.inv_norm_factor * paddle.matmul(query_layer, key_layer)
         attention_scores = qk + attn_mask
@@ -494,7 +494,7 @@ class BloomAttention(nn.Layer):
 
         # change view [batch_size, num_heads, q_length, head_dim]
         context_layer = self._merge_heads(context_layer)
-        save_tensor(context_layer, "fmha_out")
+        save_tensor(context_layer, "fmha_out_{}".format(self.layer_number))
 
         # aggregate results across tp ranks. See here: https://github.com/pypaddle/pypaddle/issues/76232
         if self.pretraining_tp > 1 and self.slow_but_exact:

@@ -442,7 +442,7 @@ class BloomAttention(nn.Layer):
         # cast attention scores to fp32, compute scaled softmax and cast back to initial dtype - [batch_size, num_heads, q_length, kv_length]
         input_dtype = attention_scores.dtype
         # `float16` has a minimum value of -65504.0, whereas `bfloat16` and `float32` have a minimum value of `-3.4e+38`
-        print("attention_mask", attention_mask.shape)
+        print("attention_mask shape", attention_mask.shape)
         if self.config.use_pure_fp16:
             with paddle.amp.auto_cast(False):
                 if input_dtype == paddle.float16:
@@ -460,7 +460,6 @@ class BloomAttention(nn.Layer):
         # [batch_size, num_heads, q_length, kv_length]
         attention_probs = self.attention_dropout(attention_probs)
 
-        print("head_mask", head_mask)
         if head_mask is not None:
             attention_probs = attention_probs * head_mask
 
@@ -955,8 +954,9 @@ class BloomModel(BloomPreTrainedModel):
         print("alibi shape", alibi.shape)
         attn_mask = alibi + paddle.cast(causal_mask, "float32") * -3e38
         print("attn_mask shape", attn_mask.shape)
-        print("transformer input", hidden_states)
-        hidden_states, presents = self.transformer_block(hidden_states, attn_mask=attn_mask, caches=self.cache_kvs, time_step=kwargs.get("time_step", None))
+        # print("transformer input", hidden_states)
+        is_decoder = kwargs.get("is_decoder", False)
+        hidden_states, presents = self.transformer_block(hidden_states, attn_mask=attn_mask, caches=self.cache_kvs, time_step=paddle.to_tensor(attn_mask.shape[-1] - 1, dtype="int32", place=paddle.CPUPlace()) if is_decoder else None)
 
         # for i, (block, layer_past) in enumerate(zip(self.h, past_key_values)):
         #     if output_hidden_states:
@@ -1046,7 +1046,6 @@ class BloomModel(BloomPreTrainedModel):
             else:
                 raise ValueError("Unknow weight {}".format(k))
 
-        print("new_state_dict", new_state_dict.keys())
         super().set_state_dict(new_state_dict, False)
 
 
@@ -1652,9 +1651,6 @@ class BloomForGeneration(BloomPreTrainedModel):
         # used for compute on gpu, avoid memcpy D2H
         cur_len_gpu = paddle.full([1], cur_len)
         
-        # time step for decoder
-        time_step = paddle.to_tensor([1], dtype='int32', place=paddle.CPUPlace())
-
         origin_len = paddle.shape(input_ids)[1]
         # used for compute on gpu, avoid memcpy D2H
         origin_len_gpu = paddle.full([1], origin_len)
@@ -1763,8 +1759,7 @@ class BloomForGeneration(BloomPreTrainedModel):
         # make the shape of attention_mask = (-1, -1, -1, -1) in dy2static.
         model_kwargs["attention_mask"] = paddle.reshape(attn_mask, paddle.shape(attn_mask))
         model_kwargs["cache"] = outputs[1] if isinstance(outputs, tuple) else None
-        immutable["time_step"] = time_step
-        print("time_step", time_step)
+        immutable["is_decoder"] = True
         max_length = paddle.to_tensor(max_length)
         # return
         while cur_len < max_length:
@@ -1781,7 +1776,6 @@ class BloomForGeneration(BloomPreTrainedModel):
                 model_kwargs,
             )
 
-            paddle.increment(time_step)
             if not self.inference:
                 cur_len += 1
             else:
