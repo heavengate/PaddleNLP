@@ -91,6 +91,7 @@ class Predictor(object):
         # Load the model and parameter
         config.mp_degree = 1
         model = BloomForGeneration.from_pretrained(merge_model_path, config=config)
+        # model.bloom = paddle.amp.decorate(model.bloom, "float16", "O2")
         model.bloom.set_state_dict(paddle.load(merge_model_path))
         model.eval()
         return model
@@ -125,6 +126,7 @@ class Predictor(object):
 
 if __name__ == "__main__":
     args = parse_arguments()
+    paddle.set_default_dtype("float16")
     predictor = Predictor(args)
     all_texts = [
         "答案：年基准利率4.35%</s>上下文：从实际看,贷款的基本条件是: 一是中国大陆居民,年龄在60岁以下; 二是有稳定的住址和工作或经营地点; 三是有稳定的收入来源; 四是无不良信用记录,贷款用途不能作为炒股,赌博等行为; 五是具有完全民事行为能力。</s>在已知答案的前提下，问题：",

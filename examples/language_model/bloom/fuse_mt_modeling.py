@@ -803,8 +803,8 @@ class BloomModel(BloomPreTrainedModel):
 
         self.gradient_checkpointing = False
 
-        # Initialize weights and apply final processing
-        self.apply(self.init_weights)
+        # # Initialize weights and apply final processing
+        # self.apply(self.init_weights)
 
     def get_input_embeddings(self):
         return self.word_embeddings
@@ -870,19 +870,6 @@ class BloomModel(BloomPreTrainedModel):
         **kwargs,
     ) -> Union[Tuple[Tensor], BaseModelOutputWithPastAndCrossAttentions]:
 
-        # Transformer cache kv
-        if len(self.cache_kvs) == 0:
-            max_seq_len = 1024
-            self.cache_kvs = [
-                    paddle.fluid.layers.fill_constant_batch_size_like(
-                        input_ids,
-                        shape=[2, -1, self.config.n_head // self.config.mp_degree,
-                               max_seq_len, self.embed_dim // self.config.n_head],
-                        input_dim_idx=0,
-                        output_dim_idx=1,
-                        value=0.,
-                        dtype="float32") for _ in range(self.config.n_layer)]
-
         past_key_values = kwargs.get("cache", past_key_values)
 
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
@@ -914,6 +901,19 @@ class BloomModel(BloomPreTrainedModel):
             inputs_embeds = self.word_embeddings(input_ids)
 
         hidden_states = self.word_embeddings_layernorm(inputs_embeds)
+
+        # Transformer cache kv
+        if len(self.cache_kvs) == 0:
+            max_seq_len = 1024
+            self.cache_kvs = [
+                    paddle.fluid.layers.fill_constant_batch_size_like(
+                        input_ids,
+                        shape=[2, -1, self.config.n_head // self.config.mp_degree,
+                               max_seq_len, self.embed_dim // self.config.n_head],
+                        input_dim_idx=0,
+                        output_dim_idx=1,
+                        value=0.,
+                        dtype=hidden_states.dtype) for _ in range(self.config.n_layer)]
 
         presents = () if use_cache else None
         all_self_attentions = () if output_attentions else None
@@ -952,11 +952,11 @@ class BloomModel(BloomPreTrainedModel):
 
         alibi = alibi.expand([batch_size * self.config.n_head, seq_length, seq_length_with_past])
         print("alibi shape", alibi.shape)
-        attn_mask = alibi + paddle.cast(causal_mask, "float32") * -3e38
+        attn_mask = alibi + causal_mask * -60000.
         print("attn_mask shape", attn_mask.shape)
         # print("transformer input", hidden_states)
         is_decoder = kwargs.get("is_decoder", False)
-        hidden_states, presents = self.transformer_block(hidden_states, attn_mask=attn_mask, caches=self.cache_kvs, time_step=paddle.shape(attn_mask)[-1] - 1 if is_decoder else None)
+        hidden_states, presents = self.transformer_block(hidden_states, attn_mask=paddle.cast(attn_mask, dtype=hidden_states.dtype), caches=self.cache_kvs, time_step=paddle.increment(paddle.shape(attn_mask)[-1], -1) if is_decoder else None)
         # hidden_states, presents = self.transformer_block(hidden_states, attn_mask=attn_mask, caches=self.cache_kvs, time_step=paddle.to_tensor(attn_mask.shape[-1] - 1, dtype="int32", place=paddle.CPUPlace()) if is_decoder else None)
 
         # for i, (block, layer_past) in enumerate(zip(self.h, past_key_values)):
