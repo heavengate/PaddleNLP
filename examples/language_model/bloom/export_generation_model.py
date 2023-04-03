@@ -86,6 +86,7 @@ def main():
         model,
         input_spec=[
             paddle.static.InputSpec(shape=[None, None], dtype="int64"),  # input_ids
+            paddle.static.InputSpec(shape=[None, None], dtype="int64"),  # attention_mask
         ],
     )
 

@@ -99,13 +99,16 @@ class Predictor(object):
     def preprocess(self, input_text):
         inputs = self.tokenizer(input_text)
         inputs = left_padding(inputs, self.tokenizer.pad_token_id)
+
         input_map = {
             "input_ids": np.array(inputs["input_ids"], dtype="int64"),
+            "attention_mask": np.array(inputs["attention_mask"], dtype="int64"),
         }
         return input_map
 
     def infer(self, input_map):
-        results = self.model(paddle.to_tensor(input_map["input_ids"]))
+        results = self.model(paddle.to_tensor(input_map["input_ids"]),
+                             paddle.to_tensor(input_map["attention_mask"]))
         return results
 
     def postprocess(self, infer_data):
@@ -126,7 +129,7 @@ class Predictor(object):
 
 if __name__ == "__main__":
     args = parse_arguments()
-    paddle.set_default_dtype("float16")
+    # paddle.set_default_dtype("float16")
     predictor = Predictor(args)
     all_texts = [
         "答案：年基准利率4.35%</s>上下文：从实际看,贷款的基本条件是: 一是中国大陆居民,年龄在60岁以下; 二是有稳定的住址和工作或经营地点; 三是有稳定的收入来源; 四是无不良信用记录,贷款用途不能作为炒股,赌博等行为; 五是具有完全民事行为能力。</s>在已知答案的前提下，问题：",

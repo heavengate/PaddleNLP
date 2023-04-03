@@ -870,6 +870,7 @@ class BloomModel(BloomPreTrainedModel):
         **kwargs,
     ) -> Union[Tuple[Tensor], BaseModelOutputWithPastAndCrossAttentions]:
 
+        is_decoder = kwargs.get("is_decoder", False)
         past_key_values = kwargs.get("cache", past_key_values)
 
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
@@ -932,11 +933,19 @@ class BloomModel(BloomPreTrainedModel):
                 attention_mask = paddle.ones([batch_size, seq_length], dtype=paddle.get_default_dtype())
 
         alibi = build_alibi_tensor(attention_mask, self.config.n_head, dtype=hidden_states.dtype)
-        causal_mask = self._prepare_attn_mask(
-            attention_mask,
-            input_shape=(batch_size, seq_length),
-            past_key_values_length=past_key_values_length,
-        )
+        # causal_mask = self._prepare_attn_mask(
+        #     attention_mask,
+        #     input_shape=(batch_size, seq_length),
+        #     past_key_values_length=past_key_values_length,
+        # )
+        if is_decoder:
+            causal_mask = 1.0 - attention_mask[:, None, :]
+        else:
+            causal_mask = paddle.tensor.triu(
+                    paddle.ones(
+                        (paddle.shape(input_ids)[-1], paddle.shape(input_ids)[-1])),
+                    diagonal=1)
+            causal_mask = paddle.logical_or(causal_mask, 1.0 - attention_mask[:, None, :])
         if self.config.mp_rank > 0:
             block_size = self.config.n_head // self.config.mp_degree
             alibi = alibi[:, self.mp_rank * block_size : (self.mp_rank + 1) * block_size]
@@ -955,7 +964,6 @@ class BloomModel(BloomPreTrainedModel):
         attn_mask = alibi + causal_mask * -60000.
         print("attn_mask shape", attn_mask.shape)
         # print("transformer input", hidden_states)
-        is_decoder = kwargs.get("is_decoder", False)
         hidden_states, presents = self.transformer_block(hidden_states, attn_mask=paddle.cast(attn_mask, dtype=hidden_states.dtype), caches=self.cache_kvs, time_step=paddle.increment(paddle.shape(attn_mask)[-1], -1) if is_decoder else None)
         # hidden_states, presents = self.transformer_block(hidden_states, attn_mask=attn_mask, caches=self.cache_kvs, time_step=paddle.to_tensor(attn_mask.shape[-1] - 1, dtype="int32", place=paddle.CPUPlace()) if is_decoder else None)
 
@@ -1492,7 +1500,7 @@ class BloomForGeneration(BloomPreTrainedModel):
         if is_pad_token_in_inputs_ids and is_pad_token_not_equal_to_eos_token_id:
             attention_mask = (input_ids != pad_token_id).astype("int64")
         else:
-            attention_mask = paddle.ones_like(input_ids, dtype="int64")
+            attention_mask = paddle.ones_like(input_ids).astype("int64")
         return attention_mask
 
     def update_scores_for_generation(self, scores, next_scores, length, unfinished_flag):
@@ -1789,7 +1797,11 @@ class BloomForGeneration(BloomPreTrainedModel):
 
         return model_kwargs["res"][:, origin_len:], scores
 
-    def forward(self, input_ids=None, **model_kwargs):
+    def forward(self,
+                input_ids=None,
+                attention_mask=None,
+                position_ids=None,
+                **model_kwargs):
 
         max_length = self.max_length
         min_length = self.min_length
@@ -1842,16 +1854,19 @@ class BloomForGeneration(BloomPreTrainedModel):
             # Init `input_ids` with bos_token_id
             input_ids = self.prepare_input_ids_for_generation(bos_token_id)
 
-        if model_kwargs.get("attention_mask", None) is None:
+        # if model_kwargs.get("attention_mask", None) is None:
+        if attention_mask is None:
             # Init `attention_mask` depending on `pad_token_id`
-            model_kwargs["attention_mask"] = self.prepare_attention_mask_for_generation(
+            attention_mask = self.prepare_attention_mask_for_generation(
                 input_ids, pad_token_id, eos_token_id
             )
+        model_kwargs["attention_mask"] = attention_mask
 
-        if model_kwargs.get("position_ids", None) is None:
-            model_kwargs["position_ids"] = paddle.arange(
+        if position_ids is None:
+            position_ids = paddle.arange(
                 0, paddle.shape(model_kwargs["attention_mask"])[-1], dtype=input_ids.dtype
             ).unsqueeze(0)
+        model_kwargs["position_ids"] = position_ids
 
         self.is_encoder_decoder = False
 

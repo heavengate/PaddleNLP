@@ -134,8 +134,10 @@ class Predictor(object):
         inputs = self.tokenizer(input_text)
         inputs = left_padding(inputs, self.tokenizer.pad_token_id)
         input_ids_name = self.runtime.get_input_info(0).name
+        attention_mask_name = self.runtime.get_input_info(1).name
         input_map = {
             input_ids_name: np.array(inputs["input_ids"], dtype="int64"),
+            attention_mask_name: np.array(inputs["attention_mask"], dtype="int64"),
         }
         return input_map
 
