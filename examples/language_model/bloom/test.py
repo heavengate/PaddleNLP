@@ -41,4 +41,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # main()
+    a = paddle.load('./20000/model_state.pdparams')
+    for k, v in a.items():
+        print(k, v.dtype)
