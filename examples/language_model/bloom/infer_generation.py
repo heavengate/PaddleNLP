@@ -16,7 +16,8 @@ from __future__ import annotations
 import distutils.util
 import os
 
-import fastdeploy as fd
+import paddle
+# import fastdeploy as fd
 import numpy as np
 
 from paddlenlp.transformers import AutoTokenizer
@@ -28,9 +29,8 @@ def parse_arguments():
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_dir", required=True, help="The directory of model.")
-    parser.add_argument("--vocab_path", type=str, default="", help="The path of tokenizer vocab.")
-    parser.add_argument("--model_prefix", type=str, default="model", help="The model and params file prefix.")
+    parser.add_argument("--model_dir", type=str, default="inference", help="The directory of model.")
+    parser.add_argument("--model_prefix", type=str, default="bloom", help="The model and params file prefix.")
     parser.add_argument(
         "--device",
         type=str,
@@ -97,7 +97,8 @@ def batchfy_text(texts, batch_size):
 class Predictor(object):
     def __init__(self, args):
         self.tokenizer = AutoTokenizer.from_pretrained(args.model_dir)
-        self.runtime = self.create_fd_runtime(args)
+        # self.runtime = self.create_fd_runtime(args)
+        self.predictor = self.create_predictor(args)
         self.batch_size = args.batch_size
         self.max_length = args.max_length
 
@@ -132,19 +133,40 @@ class Predictor(object):
                 trt_file = trt_file + ".fp16"
             option.trt_option.serialize_file = trt_file
         return fd.Runtime(option)
+    
+    def create_predictor(self, args):
+        model_path = os.path.join(args.model_dir, args.model_prefix + ".pdmodel")
+        params_path = os.path.join(args.model_dir, args.model_prefix + ".pdiparams")
+
+        config = paddle.inference.Config(model_path, params_path)
+        config.enable_use_gpu(100, 0)
+        # config.switch_ir_debug(True)
+
+        predictor = paddle.inference.create_predictor(config)
+        return predictor
 
     def preprocess(self, input_text):
-        inputs = self.tokenizer(input_text)
+        inputs = self.tokenizer(input_text, return_attention_mask=True)
         inputs = left_padding(inputs, self.tokenizer.pad_token_id)
-        input_ids_name = self.runtime.get_input_info(0).name
+        # input_ids_name = self.runtime.get_input_info(0).name
+        # attention_mask_name = self.runtime.get_input_info(1).name
+        input_ids_name, attention_mask_name = self.predictor.get_input_names()
         input_map = {
             input_ids_name: np.array(inputs["input_ids"], dtype="int64"),
+            attention_mask_name: np.array(inputs["attention_mask"], dtype="int64"),
         }
         return input_map
 
     def infer(self, input_map):
-        results = self.runtime.infer(input_map)
-        return results
+        for k, v in input_map.items():
+            handle = self.predictor.get_input_handle(k)
+            handle.copy_from_cpu(v)
+        self.predictor.run()
+        return [self.predictor.get_output_handle(name).copy_to_cpu() \
+                for name in self.predictor.get_output_names()]
+
+        # results = self.runtime.infer(input_map)
+        # return results
 
     def postprocess(self, infer_data):
         result = []
@@ -170,6 +192,7 @@ def main():
         f"答案：年基准利率4.35% {tokenizer.eos_token}上下文：从实际看,贷款的基本条件是: 一是中国大陆居民,年龄在60岁以下; 二是有稳定的住址和工作或经营地点; 三是有稳定的收入来源; 四是无不良信用记录,贷款用途不能作为炒股,赌博等行为; 五是具有完全民事行为能力。{tokenizer.eos_token}在已知答案的前提下，问题：",
         f"答案：U系列{tokenizer.eos_token}上下文：U系列是最好的，采用国际顶尖技术（由格力自主研发）双级变频压缩机，提高压缩机运转效率，制冷制热能力更强劲；1赫兹变频技术，使空调相当于一个15 W电灯泡，更加节能省电；送风面积广，风力大；生态风，净化空气。非常不错，现在国美在做活动，可以了解一下。{tokenizer.eos_token}在已知答案的前提下，问题：",
     ]
+    all_texts = ["<U>高空观景公园</U><R><API>", "<U>北京带小孩子去哪里玩比较好?</U><R><API>"]
     batch_texts = batchfy_text(all_texts, args.batch_size)
     for bs, texts in enumerate(batch_texts):
         outputs = predictor.predict(texts)
