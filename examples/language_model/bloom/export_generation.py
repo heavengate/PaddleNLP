@@ -19,7 +19,8 @@ import os
 import paddle
 from model_split_merge import merge_model_parallel
 
-from paddlenlp.transformers import AutoTokenizer, BloomConfig, BloomForGeneration
+from paddlenlp.transformers import AutoTokenizer, BloomConfig
+from fuse_mt_modeling import BloomForGeneration
 
 MODEL_CLASSES = {"bloom": (BloomForGeneration)}
 
@@ -43,7 +44,7 @@ def parse_args():
     )
     parser.add_argument(
         "--output_path",
-        default="./pretrained/bloom-560m-generation/bloom",
+        default="./inference/bloom",
         type=str,
         # required=True,
         help="The output file prefix used to save the exported inference model.",
@@ -86,12 +87,14 @@ def main():
     # Load the model and parameter
     config.mp_degree = 1
     model = model_class.from_pretrained(args.model_name_or_path, config=config, low_cpu_mem_usage=True)
+    model.bloom.set_state_dict(paddle.load(args.model_name_or_path))
 
     model.eval()
     model = paddle.jit.to_static(
         model,
         input_spec=[
             paddle.static.InputSpec(shape=[None, None], dtype="int64"),  # input_ids
+            paddle.static.InputSpec(shape=[None, None], dtype="int64"),  # attention_mask
         ],
     )
 
