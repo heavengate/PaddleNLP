@@ -48,7 +48,7 @@ def parse_args():
     )
     parser.add_argument(
         "--output_path",
-        default="./pretrained/bloom-560m-generation/bloom",
+        default="./inference/bloom",
         type=str,
         # required=True,
         help="The output file prefix used to save the exported inference model.",
@@ -77,6 +77,7 @@ def main():
     config.use_recompute = False
     # Load the model and parameter
     model = model_class.from_pretrained(args.model_name_or_path, config=config, low_cpu_mem_usage=True)
+    model.bloom.set_state_dict(paddle.load(args.model_name_or_path))
 
     model.eval()
     input_spec = [
