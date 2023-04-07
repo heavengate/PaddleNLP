@@ -1023,7 +1023,7 @@ class BloomModel(BloomPreTrainedModel):
         new_state_dict = {}
         for k, v in state_dict.items():
             if not k.startswith("bloom.h."):
-                new_state_dict[k] = v
+                # new_state_dict[k] = v
                 continue
 
             idx = k.split(".")[2]
