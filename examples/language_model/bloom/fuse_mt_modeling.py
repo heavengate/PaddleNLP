@@ -51,6 +51,14 @@ BLOOM_PRETRAINED_MODEL_ARCHIVE_LIST = [
 ]
 
 
+def save_tensor(tensor, name):
+    data = tensor.cpu().numpy()
+    with open("fuse_{}.txt".format(name), 'w') as wf:
+        wf.write("{}\n".format(str(data.shape)))
+        for d in data.reshape((-1)):
+            wf.write("{:.8f}\n".format(d))
+
+
 def parallel_matmul(lm_output, logit_weights, parallel_output=True):
     hcg = fleet.get_hybrid_communicate_group()
     model_parallel_group = hcg.get_model_parallel_group()
@@ -936,27 +944,27 @@ class BloomModel(BloomPreTrainedModel):
         #     past_key_values_length=past_key_values_length,
         # )
         if is_decoder:
-            causal_mask = 1.0 - attention_mask[:, None, :]
+            causal_mask = 1.0 - attention_mask[:, None, None, :]
         else:
             causal_mask = paddle.tensor.triu(
                     paddle.ones(
                         (paddle.shape(input_ids)[-1], paddle.shape(input_ids)[-1])),
                     diagonal=1)
-            causal_mask = paddle.logical_or(causal_mask, 1.0 - attention_mask[:, None, :])
+            causal_mask = paddle.logical_or(causal_mask, 1.0 - attention_mask[:, None, None, :])
         if self.config.mp_rank > 0:
             block_size = self.config.n_head // self.config.mp_degree
             alibi = alibi[:, self.mp_rank * block_size : (self.mp_rank + 1) * block_size]
-            alibi = alibi.reshape([batch_size * block_size, 1, seq_length_with_past])
-            causal_mask = paddle.cast(
-                paddle.repeat_interleave(paddle.cast(causal_mask, "int32"), block_size, axis=0), "bool"
-            )
+            alibi = alibi.reshape([batch_size, block_size, 1, seq_length_with_past])
+            # causal_mask = paddle.cast(
+            #     paddle.repeat_interleave(paddle.cast(causal_mask, "int32"), block_size, axis=0), "bool"
+            # )
         else:
-            alibi = alibi.reshape([batch_size * self.config.n_head, 1, seq_length_with_past])
-            causal_mask = paddle.cast(
-                paddle.repeat_interleave(paddle.cast(causal_mask, "int32"), self.config.n_head, axis=0), "bool"
-            )
+            alibi = alibi.reshape([batch_size, self.config.n_head, 1, seq_length_with_past])
+            # causal_mask = paddle.cast(
+            #     paddle.repeat_interleave(paddle.cast(causal_mask, "int32"), self.config.n_head, axis=0), "bool"
+            # )
 
-        alibi = alibi.expand([batch_size * self.config.n_head, seq_length, seq_length_with_past])
+        alibi = alibi.expand([batch_size, self.config.n_head, seq_length, seq_length_with_past])
         attn_mask = alibi + causal_mask * -60000.
         hidden_states, presents = self.transformer_block(hidden_states, attn_mask=paddle.cast(attn_mask, dtype=hidden_states.dtype), caches=self.cache_kvs, time_step=paddle.increment(paddle.shape(attn_mask)[-1], -1) if is_decoder else None)
         # hidden_states, presents = self.transformer_block(hidden_states, attn_mask=attn_mask, caches=self.cache_kvs, time_step=paddle.to_tensor(attn_mask.shape[-1] - 1, dtype="int32", place=paddle.CPUPlace()) if is_decoder else None)
@@ -1722,8 +1730,8 @@ class BloomForGeneration(BloomPreTrainedModel):
                     probs = TopPProcess(probs, top_p, min_tokens_to_keep)
 
             if not self.use_topp_sampling:
-                next_tokens = paddle.multinomial(probs)
-                # _, next_tokens = paddle.topk(paddle.cast(probs, dtype="float32"), 1)
+                # next_tokens = paddle.multinomial(paddle.cast(probs, dtype="float32"))
+                _, next_tokens = paddle.topk(paddle.cast(probs, dtype="float32"), 1)
 
             next_scores = paddle.index_sample(origin_probs, next_tokens)
 
