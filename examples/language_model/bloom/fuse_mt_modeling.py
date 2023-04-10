@@ -1033,10 +1033,10 @@ class BloomModel(BloomPreTrainedModel):
                 new_state_dict["fusemt.{}.ln_bias".format(idx)] = v
             elif k.endswith("self_attention.query_key_value.weight"):
                 # new_state_dict["fusemt.{}.qkv_weight".format(idx)] = v.transpose([1, 0]).reshape([3, self.n_head // self.mp_degree, self.embed_dim // self.n_head, self.hidden_size])
-                new_state_dict["fusemt.{}.qkv_weight".format(idx)] = v.reshape([self.embed_dim, self.n_head // self.mp_degree, 3, self.embed_dim // self.n_head]).transpose([2, 1, 3, 0])
+                new_state_dict["fusemt.{}.qkv_weight".format(idx)] = v.reshape([self.embed_dim, self.n_head // self.config.mp_degree, 3, self.embed_dim // self.n_head]).transpose([2, 1, 3, 0])
             elif k.endswith("self_attention.query_key_value.bias"):
                 # new_state_dict["fusemt.{}.qkv_bias".format(idx)] = v.reshape([3, self.n_head // self.mp_degree, self.hidden_size // self.n_head])
-                new_state_dict["fusemt.{}.qkv_bias".format(idx)] = v.reshape([self.n_head // self.mp_degree, 3, self.hidden_size // self.n_head]).transpose([1, 0, 2])
+                new_state_dict["fusemt.{}.qkv_bias".format(idx)] = v.reshape([self.n_head // self.config.mp_degree, 3, self.hidden_size // self.n_head]).transpose([1, 0, 2])
             elif k.endswith("self_attention.dense.weight"):
                 new_state_dict["fusemt.{}.linear_weight".format(idx)] = v
             elif k.endswith("self_attention.dense.bias"):
