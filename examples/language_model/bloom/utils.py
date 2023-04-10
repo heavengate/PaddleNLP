@@ -126,7 +126,10 @@ def load_model(args: str, model_class: Type[PretrainedModel]):
     world_size = paddle.distributed.get_world_size()
 
     if world_size == 1:
-        return model_class.from_pretrained(args.model_name_or_path, config=config)
+        model = model_class.from_pretrained(args.model_name_or_path, config=config)
+        weight_path = model._resolve_model_file_path(args.model_name_or_path)
+        model.bloom.set_state_dict(paddle.load(weight_path))
+        return model
 
     # start to init distributed env
     strategy = fleet.DistributedStrategy()

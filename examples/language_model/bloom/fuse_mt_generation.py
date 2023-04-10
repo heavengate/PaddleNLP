@@ -49,7 +49,6 @@ class Predictor(object):
         self.args = args
 
         self.model = load_model(args, BloomForCausalLM)
-        self.model.bloom.set_state_dict(paddle.load(args.model_name_or_path + "/model_state.pdparams"))
 
         self.model.eval()
 
