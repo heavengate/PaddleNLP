@@ -17,8 +17,10 @@ import argparse
 import os
 
 import paddle
+from utils import load_model
 
-from paddlenlp.transformers import AutoTokenizer, BloomConfig, BloomForCausalLM
+from paddlenlp.transformers import AutoTokenizer
+from fuse_mt_modeling import BloomForCausalLM
 
 MODEL_CLASSES = {"bloom": (BloomForCausalLM)}
 
@@ -30,12 +32,11 @@ def parse_args():
         "--model_type",
         default="bloom",
         type=str,
-        # required=True,
         help="Model type selected in the list: " + ", ".join(MODEL_CLASSES.keys()),
     )
     parser.add_argument(
         "--model_dtype",
-        default="float32",
+        default="float16",
         type=str,
         help="Model dtype selected in the list: " + ", ".join(MODEL_CLASSES.keys()),
     )
@@ -43,7 +44,7 @@ def parse_args():
         "--model_name_or_path",
         default="bigscience/bloom-560m",
         type=str,
-        required=False,
+        required=True,
         help="name or path of the trained model to be exported.",
     )
     parser.add_argument(
@@ -70,19 +71,20 @@ def main():
 
     args.model_type = args.model_type.lower()
     model_class = MODEL_CLASSES[args.model_type]
+    model = load_model(args, model_class)
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path)
 
-    config = BloomConfig.from_pretrained(args.model_name_or_path)
-    config.use_recompute = False
-    # Load the model and parameter
-    model = model_class.from_pretrained(args.model_name_or_path, config=config, low_cpu_mem_usage=True)
-    model.bloom.set_state_dict(paddle.load(args.model_name_or_path))
+    # config = BloomConfig.from_pretrained(args.model_name_or_path)
+    # config.use_recompute = False
+    # # Load the model and parameter
+    # model = model_class.from_pretrained(args.model_name_or_path, config=config, low_cpu_mem_usage=True)
+    # model.bloom.set_state_dict(paddle.load(args.model_name_or_path))
 
     model.eval()
     input_spec = [
         paddle.static.InputSpec(shape=[None, None], dtype="int64"),  # input_ids
-        None,
+        paddle.static.InputSpec(shape=[None, None], dtype="int64"),  # attention_mask
         None,
         # max_length
         args.max_length,

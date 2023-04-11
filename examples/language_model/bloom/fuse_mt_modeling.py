@@ -853,7 +853,7 @@ class BloomModel(BloomPreTrainedModel):
                                     activation="gelu",
                                     num_layers=config.n_layer,
                                     nranks=config.tensor_parallel_degree,
-                                    ring_id=0,
+                                    ring_id=0 if config.tensor_parallel_degree > 1 else -1,
                                     ln_scale_attrs=ln_scale_attrs,
                                     ln_bias_attrs=ln_bias_attrs,
                                     qkv_weight_attrs=qkv_weight_attrs,
@@ -1016,7 +1016,7 @@ class BloomModel(BloomPreTrainedModel):
                     paddle.ones(
                         (paddle.shape(input_ids)[-1], paddle.shape(input_ids)[-1])),
                     diagonal=1)
-            causal_mask = paddle.logical_or(causal_mask, 1.0 - attention_mask[:, None, None, :])
+            causal_mask = paddle.logical_or(causal_mask, 1.0 - attention_mask[:, None, None, :]).astype(paddle.get_default_dtype())
 
         if self.config.tensor_parallel_degree > 1:
             block_size = self.config.n_head // self.config.tensor_parallel_degree
