@@ -852,6 +852,8 @@ class BloomModel(BloomPreTrainedModel):
                                     4 * self.embed_dim,
                                     activation="gelu",
                                     num_layers=config.n_layer,
+                                    nranks=config.tensor_parallel_degree,
+                                    ring_id=0,
                                     ln_scale_attrs=ln_scale_attrs,
                                     ln_bias_attrs=ln_bias_attrs,
                                     qkv_weight_attrs=qkv_weight_attrs,
@@ -1018,7 +1020,7 @@ class BloomModel(BloomPreTrainedModel):
 
         if self.config.tensor_parallel_degree > 1:
             block_size = self.config.n_head // self.config.tensor_parallel_degree
-            alibi = alibi[:, self.config.tensor_parallel_degree* block_size : (self.config.tensor_parallel_degree + 1) * block_size]
+            alibi = alibi[:, self.config.tensor_parallel_rank * block_size : (self.config.tensor_parallel_rank + 1) * block_size]
             alibi = alibi.reshape([batch_size, block_size, 1, seq_length_with_past])
             # causal_mask = paddle.cast(
             #     paddle.repeat_interleave(paddle.cast(causal_mask, "int32"), block_size, axis=0), "bool"
@@ -1029,7 +1031,7 @@ class BloomModel(BloomPreTrainedModel):
             #     paddle.repeat_interleave(paddle.cast(causal_mask, "int32"), self.config.n_head, axis=0), "bool"
             # )
 
-        alibi = alibi.expand([batch_size, self.config.n_head, seq_length, seq_length_with_past])
+        alibi = alibi.expand([batch_size, self.config.n_head // self.config.tensor_parallel_degree, seq_length, seq_length_with_past])
         attn_mask = alibi + causal_mask * -60000.
         hidden_states, presents = self.transformer_block(hidden_states, attn_mask=paddle.cast(attn_mask, dtype=hidden_states.dtype), caches=self.cache_kvs, time_step=paddle.increment(paddle.shape(attn_mask)[-1], -1) if is_decoder else None)
         # hidden_states, presents = self.transformer_block(hidden_states, attn_mask=attn_mask, caches=self.cache_kvs, time_step=paddle.to_tensor(attn_mask.shape[-1] - 1, dtype="int32", place=paddle.CPUPlace()) if is_decoder else None)
@@ -1088,7 +1090,7 @@ class BloomModel(BloomPreTrainedModel):
         new_state_dict = {}
         for k, v in state_dict.items():
             if not k.startswith("bloom.h."):
-                # new_state_dict[k] = v
+                new_state_dict[k] = v
                 continue
 
             idx = k.split(".")[2]

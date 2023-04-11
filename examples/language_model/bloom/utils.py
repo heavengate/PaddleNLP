@@ -166,4 +166,5 @@ def load_model(args: str, model_class: Type[PretrainedModel]):
     state_dict = paddle.load(weight_file, return_numpy=True)
 
     model.set_state_dict(state_dict)
+    model.bloom.set_state_dict(state_dict)
     return model
