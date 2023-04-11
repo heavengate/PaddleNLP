@@ -17,10 +17,11 @@ import argparse
 import os
 
 import paddle
-from utils import load_model
+import paddle.distributed as dist
 
 from paddlenlp.transformers import AutoTokenizer
 from fuse_mt_modeling import BloomForCausalLM
+from utils import load_model
 
 MODEL_CLASSES = {"bloom": (BloomForCausalLM)}
 
@@ -60,6 +61,11 @@ def parse_args():
         type=int,
         help="max length of output sentence",
     )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=20,
+        help="the seed of parameter initialization")
     args = parser.parse_args()
     return args
 
@@ -74,12 +80,6 @@ def main():
     model = load_model(args, model_class)
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path)
-
-    # config = BloomConfig.from_pretrained(args.model_name_or_path)
-    # config.use_recompute = False
-    # # Load the model and parameter
-    # model = model_class.from_pretrained(args.model_name_or_path, config=config, low_cpu_mem_usage=True)
-    # model.bloom.set_state_dict(paddle.load(args.model_name_or_path))
 
     model.eval()
     input_spec = [
@@ -115,9 +115,15 @@ def main():
     ]
     model = paddle.jit.to_static(model.generate, input_spec=input_spec)
 
-    # # Save converted static graph model
-    paddle.jit.save(model, args.output_path)
-    # # Also save tokenizer for inference usage
+    # Save converted static graph model
+    if dist.get_world_size() > 1:
+        path, name = os.path.split(args.output_path)
+        local_rank = dist.ParallelEnv().dev_id
+        rank_path = os.path.join(path, "rank_{}".format(local_rank), name)
+        paddle.jit.save(model, rank_path)
+    else:
+        paddle.jit.save(model, args.output_path)
+    # Also save tokenizer for inference usage
     tokenizer.save_pretrained(os.path.dirname(args.output_path))
 
 

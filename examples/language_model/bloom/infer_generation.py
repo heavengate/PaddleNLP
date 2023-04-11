@@ -17,6 +17,8 @@ import distutils.util
 import os
 
 import paddle
+import paddle.distributed as dist
+import paddle.distributed.fleet as fleet
 # import fastdeploy as fd
 import numpy as np
 
@@ -92,13 +94,53 @@ def batchfy_text(texts, batch_size):
     return batch_texts
 
 
+def init_dist_env(world_size, seed=20):
+    # start to init distributed env
+    strategy = fleet.DistributedStrategy()
+
+    strategy.hybrid_configs = {
+        "dp_degree": 1,
+        "mp_degree": world_size,
+        "pp_degree": 1,
+        "sharding_degree": 1,
+    }
+
+    # Set control in tensor parallel
+    strategy.tensor_parallel_configs = {"tensor_init_seed": seed}
+
+    fleet.init(is_collective=True, strategy=strategy)
+
+
 class Predictor(object):
     def __init__(self, args):
+        self.batch_size = args.batch_size
+        self.max_length = args.max_length
+
+        if dist.get_world_size() > 1:
+            init_dist_env(dist.get_world_size())
+            self.nranks = fleet.worker_num()
+            self.rank = fleet.worker_index()
+        else:
+            self.nranks = 1
+            self.rank = 0
+
         self.tokenizer = AutoTokenizer.from_pretrained(args.model_dir)
         # self.runtime = self.create_fd_runtime(args)
         self.predictor = self.create_predictor(args)
-        self.batch_size = args.batch_size
-        self.max_length = args.max_length
+    
+    def _generate_comm_init_config(self, rank, nranks):
+        ring_id_to_ranks = ','.join(['0'] + [str(i) for i in range(nranks)])
+        rank_to_ring_ids = ''.join(['{},0\n'.format(i) for i in range(nranks)])
+        comm_str = '[ring_id -> ranks]\n' + ring_id_to_ranks + \
+                    '\n[rank -> ring_ids]\n' + rank_to_ring_ids
+
+        config_fname = "./.comm_config{}.csv".format(rank)
+        if os.path.exists(config_fname):
+            os.remove(config_fname)
+        with open(config_fname, 'w') as f:
+            f.write(comm_str)
+
+        return config_fname
 
     def create_fd_runtime(self, args):
         option = fd.RuntimeOption()
@@ -133,12 +175,38 @@ class Predictor(object):
         return fd.Runtime(option)
     
     def create_predictor(self, args):
-        model_path = os.path.join(args.model_dir, args.model_prefix + ".pdmodel")
-        params_path = os.path.join(args.model_dir, args.model_prefix + ".pdiparams")
+        if self.nranks > 1:
+            model_path = os.path.join(args.model_dir,
+                                      "rank_{}".format(self.rank),
+                                      args.model_prefix + ".pdmodel")
+            params_path = os.path.join(args.model_dir,
+                                      "rank_{}".format(self.rank),
+                                      args.model_prefix + ".pdiparams")
+        else:
+            model_path = os.path.join(args.model_dir, args.model_prefix + ".pdmodel")
+            params_path = os.path.join(args.model_dir, args.model_prefix + ".pdiparams")
 
         config = paddle.inference.Config(model_path, params_path)
         config.enable_use_gpu(100, 0)
         # config.switch_ir_debug(True)
+
+        if self.nranks  > 1:
+            trainer_endpoints = fleet.worker_endpoints()
+            current_endpoint = trainer_endpoints[self.rank]
+
+            dist_config = config.dist_config()
+            dist_config.set_ranks(self.nranks, self.rank)
+            dist_config.set_endpoints(trainer_endpoints, current_endpoint)
+            dist_config.enable_dist_model(True)
+
+            config_fname = self._generate_comm_init_config(self.rank,
+                                                           self.nranks)
+            print("config_fname", config_fname)
+            dist_config.set_comm_init_config(config_fname)
+            config.set_dist_config(dist_config)
+
+        # pass_builder = config.pass_builder()
+        # pass_builder.set_passes([])
 
         predictor = paddle.inference.create_predictor(config)
         return predictor
