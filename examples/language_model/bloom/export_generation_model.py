@@ -20,7 +20,8 @@ import paddle
 import paddle.distributed as dist
 
 from paddlenlp.transformers import AutoTokenizer
-from fuse_mt_modeling import BloomForCausalLM
+# from fuse_mt_modeling import BloomForCausalLM
+from paddlenlp.transformers import BloomForCausalLM
 from utils import load_model
 
 MODEL_CLASSES = {"bloom": (BloomForCausalLM)}

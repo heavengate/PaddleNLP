@@ -129,8 +129,8 @@ class Predictor(object):
         self.predictor = self.create_predictor(args)
     
     def _generate_comm_init_config(self, rank, nranks):
-        ring_id_to_ranks = ','.join(['0'] + [str(i) for i in range(nranks)])
-        rank_to_ring_ids = ''.join(['{},0\n'.format(i) for i in range(nranks)])
+        ring_id_to_ranks = ','.join(['14'] + [str(i) for i in range(nranks)])
+        rank_to_ring_ids = ''.join(['{},14\n'.format(i) for i in range(nranks)])
         comm_str = '[ring_id -> ranks]\n' + ring_id_to_ranks + \
                     '\n[rank -> ring_ids]\n' + rank_to_ring_ids
 
@@ -278,4 +278,5 @@ def main():
 
 
 if __name__ == "__main__":
+    # fleet.init(is_collective=True)
     main()
