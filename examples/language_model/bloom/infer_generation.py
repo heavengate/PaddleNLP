@@ -46,7 +46,7 @@ def parse_arguments():
         help="The inference runtime backend.",
     )
     parser.add_argument("--batch_size", type=int, default=2, help="The batch size of data.")
-    parser.add_argument("--max_length", type=int, default=128, help="The max length of sequence.")
+    parser.add_argument("--max_length", type=int, default=200, help="The max length of sequence.")
     parser.add_argument("--log_interval", type=int, default=10, help="The interval of logging.")
     parser.add_argument("--use_fp16", type=distutils.util.strtobool, default=False, help="Wheter to use FP16 mode")
     parser.add_argument("--cpu_threads", type=int, default=1, help="Number of threads to predict when using cpu.")
@@ -187,7 +187,10 @@ class Predictor(object):
             params_path = os.path.join(args.model_dir, args.model_prefix + ".pdiparams")
 
         config = paddle.inference.Config(model_path, params_path)
-        config.enable_use_gpu(100, 0)
+        config.enable_memory_optim()
+        config.switch_ir_optim(True)
+        device_id = int(os.environ.get("FLAGS_selected_gpus", 0))
+        config.enable_use_gpu(100, device_id)
         # config.switch_ir_debug(True)
 
         if self.nranks  > 1:
@@ -199,14 +202,8 @@ class Predictor(object):
             dist_config.set_endpoints(trainer_endpoints, current_endpoint)
             dist_config.enable_dist_model(True)
 
-            config_fname = self._generate_comm_init_config(self.rank,
-                                                           self.nranks)
-            print("config_fname", config_fname)
-            dist_config.set_comm_init_config(config_fname)
+            dist_config.set_comm_init_config("./rank_mapping.csv")
             config.set_dist_config(dist_config)
-
-        # pass_builder = config.pass_builder()
-        # pass_builder.set_passes([])
 
         predictor = paddle.inference.create_predictor(config)
         return predictor

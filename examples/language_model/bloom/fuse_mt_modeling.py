@@ -853,8 +853,8 @@ class BloomModel(BloomPreTrainedModel):
                                     activation="gelu",
                                     num_layers=config.n_layer,
                                     nranks=config.tensor_parallel_degree,
-                                    # ring_id=0 if config.tensor_parallel_degree > 1 else -1,
-                                    ring_id=14,
+                                    ring_id=0 if config.tensor_parallel_degree > 1 else -1,
+                                    # ring_id=14,
                                     ln_scale_attrs=ln_scale_attrs,
                                     ln_bias_attrs=ln_bias_attrs,
                                     qkv_weight_attrs=qkv_weight_attrs,
@@ -986,7 +986,7 @@ class BloomModel(BloomPreTrainedModel):
                         input_dim_idx=0,
                         output_dim_idx=1,
                         value=0.,
-                        dtype=hidden_states.dtype) for _ in range(self.config.n_layer)]
+                        dtype=paddle.get_default_dtype()) for _ in range(self.config.n_layer)]
 
         presents = () if use_cache else None
         all_self_attentions = () if output_attentions else None
@@ -1231,8 +1231,8 @@ class BloomForCausalLM(BloomPreTrainedModel):
             tensor_parallel_output=True,
         )
 
-        # Initialize weights and apply final processing
-        self.apply(self.init_weights)
+        # # Initialize weights and apply final processing
+        # self.apply(self.init_weights)
 
     def get_output_embeddings(self):
         return self.lm_head
