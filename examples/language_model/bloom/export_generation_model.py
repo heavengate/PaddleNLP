@@ -18,13 +18,12 @@ import os
 
 import paddle
 import paddle.distributed as dist
+from paddle.distributed import fleet
 
 from paddlenlp.transformers import AutoTokenizer
 from fuse_mt_modeling import BloomForCausalLM
 # from paddlenlp.transformers import BloomForCausalLM
-from utils import load_model
-
-MODEL_CLASSES = {"bloom": (BloomForCausalLM)}
+from paddlenlp.transformers.model_utils import _find_weight_file_path
 
 
 def parse_args():
@@ -34,13 +33,13 @@ def parse_args():
         "--model_type",
         default="bloom",
         type=str,
-        help="Model type selected in the list: " + ", ".join(MODEL_CLASSES.keys()),
+        help="Model type selected in the list: bloom",
     )
     parser.add_argument(
         "--model_dtype",
         default="float16",
         type=str,
-        help="Model dtype selected in the list: " + ", ".join(MODEL_CLASSES.keys()),
+        help="Model dtype selected in the list: bloom",
     )
     parser.add_argument(
         "--model_name_or_path",
@@ -76,9 +75,30 @@ def main():
     args = parse_args()
     paddle.set_default_dtype(args.model_dtype)
 
-    args.model_type = args.model_type.lower()
-    model_class = MODEL_CLASSES[args.model_type]
-    model = load_model(args, model_class)
+    tensor_parallel_degree = paddle.distributed.get_world_size()
+    tensor_parallel_rank = 0
+    if tensor_parallel_degree > 1:
+        strategy = fleet.DistributedStrategy()
+        strategy.hybrid_configs = {
+            "dp_degree": 1,
+            "mp_degree": tensor_parallel_degree,
+            "pp_degree": 1,
+            "sharding_degree": 1,
+        }
+        fleet.init(is_collective=True, strategy=strategy)
+        hcg = fleet.get_hybrid_communicate_group()
+        tensor_parallel_rank = hcg.get_model_parallel_rank()
+
+    model = BloomForCausalLM.from_pretrained(
+        args.model_name_or_path,
+        load_state_as_np=True,
+        low_cpu_mem_usage=True,
+        dtype=args.model_dtype,
+        tensor_parallel_degree=tensor_parallel_degree,
+        tensor_parallel_rank=tensor_parallel_rank,
+    )
+    weight_path = _find_weight_file_path(args.model_name_or_path, BloomForCausalLM, model.config)
+    model.bloom.set_state_dict(paddle.load(weight_path))
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path)
 

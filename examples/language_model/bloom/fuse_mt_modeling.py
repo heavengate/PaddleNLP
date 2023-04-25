@@ -855,8 +855,8 @@ class BloomModel(BloomPreTrainedModel):
                                     activation="gelu",
                                     num_layers=config.n_layer,
                                     nranks=config.tensor_parallel_degree,
-                                    ring_id=0 if config.tensor_parallel_degree > 1 else -1,
-                                    # ring_id=14,
+                                    # ring_id=0 if config.tensor_parallel_degree > 1 else -1,
+                                    ring_id=14,
                                     ln_scale_attrs=ln_scale_attrs,
                                     ln_bias_attrs=ln_bias_attrs,
                                     qkv_weight_attrs=qkv_weight_attrs,
@@ -1030,9 +1030,9 @@ class BloomModel(BloomPreTrainedModel):
             #     paddle.repeat_interleave(paddle.cast(causal_mask, "int32"), self.config.n_head, axis=0), "bool"
             # )
 
-        print("dtype", paddle.get_default_dtype())
-        save_tensor(alibi, 'alibi_{}'.format(seq_length_with_past))
-        save_tensor(causal_mask, 'causal_mask_{}'.format(seq_length_with_past))
+        # print("dtype", paddle.get_default_dtype())
+        # save_tensor(alibi, 'alibi_{}'.format(seq_length_with_past))
+        # save_tensor(causal_mask, 'causal_mask_{}'.format(seq_length_with_past))
         alibi = alibi.expand([batch_size, self.config.n_head // self.config.tensor_parallel_degree, seq_length, seq_length_with_past])
         attn_mask = alibi + causal_mask * -10000.
         hidden_states, presents = self.transformer_block(hidden_states, attn_mask=paddle.cast(attn_mask, dtype=hidden_states.dtype), caches=self.cache_kvs, time_step=paddle.increment(paddle.shape(attn_mask)[-1], -1) if is_decoder else None)
@@ -1318,7 +1318,7 @@ class BloomForCausalLM(BloomPreTrainedModel):
         parallel_output = True
         if hidden_states.stop_gradient:
             parallel_output = False
-        lm_logits = parallel_matmul(hidden_states, self.bloom.word_embeddings.weight, parallel_output=parallel_output)
+        lm_logits = parallel_matmul(hidden_states, self.bloom.word_embeddings.weight, parallel_output=False)
         # lm_logits = self.lm_head(hidden_states)
 
         loss = None
