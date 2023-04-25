@@ -13,19 +13,14 @@
 # limitations under the License.
 from __future__ import annotations
 
-import os
-from typing import Any, Dict, List, Optional, Tuple, Type, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import paddle
 import paddle.nn as nn
-from paddle import LazyGuard
-from paddle.distributed import fleet
 from paddle.optimizer.lr import LambdaDecay
 
-from paddlenlp.metrics import Rouge1, Rouge2, RougeL
+from paddlenlp.metrics import BLEU, Rouge1, Rouge2, RougeL
 from paddlenlp.trainer import Trainer
-from paddlenlp.transformers import BloomConfig, PretrainedModel
-from paddlenlp.utils.log import logger
 
 
 class BloomTrainer(Trainer):
@@ -98,6 +93,7 @@ def compute_metrics(predictions, references):
     rouge1 = Rouge1()
     rouge2 = Rouge2()
     rougel = RougeL()
+    bleu4 = BLEU(n_size=4)
 
     # for pred in predictions:
 
@@ -105,10 +101,12 @@ def compute_metrics(predictions, references):
     rouge2_score = rouge2.score(predictions, references)
     for pred, ref in zip(predictions, references):
         rougel.add_inst(pred, [ref])
+        bleu4.add_inst(pred, [ref])
     return {
         "rouge1": rouge1_score,
         "rouge2": rouge2_score,
         "rougel": rougel.score(),
+        "bleu4": bleu4.score(),
     }
 
 
