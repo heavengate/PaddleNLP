@@ -35,10 +35,10 @@ from paddlenlp.transformers.model_outputs import (
     TokenClassifierOutput,
 )
 from paddlenlp.transformers.model_utils import PretrainedModel
-from paddlenlp.transformers import BloomConfig 
-from paddlenlp.utils.converter import StateDictNameMapping
+from paddlenlp.utils.converter import StateDictNameMapping 
 from paddlenlp.utils.log import logger
 
+from paddlenlp.transformers.bloom.configuration import BloomConfig
 from paddlenlp.transformers.bloom.processor import (
     ForcedBOSTokenLogitsProcessor,
     ForcedEOSTokenLogitsProcessor,
@@ -55,6 +55,12 @@ __all__ = [
     "BloomForTokenClassification",
     "BloomForGeneration",
 ]
+
+
+def save_tensor(t, name):
+    with open('fmt_{}.txt'.format(name), 'w') as f:
+        for d in t.cpu().numpy().reshape([-1]):
+            f.write('{:.8f}\n'.format(d))
 
 
 def parallel_matmul(x: Tensor, y: Tensor, parallel_output=True):
@@ -335,7 +341,6 @@ class BloomAttention(nn.Layer):
     def __init__(self, config, layer_number=None):
         super().__init__()
 
-        self.layer_number = layer_number
         self.pretraining_tp = config.pretraining_tp
         self.slow_but_exact = config.slow_but_exact
 
@@ -346,8 +351,9 @@ class BloomAttention(nn.Layer):
         self.hidden_dropout = config.hidden_dropout
         self.config = config
 
-        assert self.num_heads % config.tensor_parallel_degree == 0
-        self.num_heads = self.num_heads // config.tensor_parallel_degree
+        if config.tensor_parallel_degree > 1:
+            assert self.num_heads % config.tensor_parallel_degree == 0
+            self.num_heads = self.num_heads // config.tensor_parallel_degree
 
         # Layer-wise attention scaling
         self.inv_norm_factor = 1.0 / math.sqrt(self.head_dim)
@@ -462,19 +468,13 @@ class BloomAttention(nn.Layer):
         # cast attention scores to fp32, compute scaled softmax and cast back to initial dtype - [batch_size, num_heads, q_length, kv_length]
         input_dtype = query_layer.dtype
         # `float16` has a minimum value of -65504.0, whereas `bfloat16` and `float32` have a minimum value of `-3.4e+38`
-        if self.config.use_pure_fp16:
-            with paddle.amp.auto_cast(False):
-                if input_dtype == paddle.float16:
-                    attention_scores = paddle.cast(attention_scores, paddle.float32)
-                attn_weights = masked_fill(attention_scores, attention_mask, finfo(attention_scores.dtype).min)
-                attention_probs = paddle.cast(
-                    F.softmax(attn_weights, axis=-1, dtype=paddle.float32), dtype=input_dtype
-                )
-        else:
-            if input_dtype == paddle.float16:
-                attention_scores = paddle.cast(attention_scores, paddle.float32)
+        if input_dtype != paddle.float32:
+            attention_scores = paddle.cast(attention_scores, paddle.float32)
             attn_weights = masked_fill(attention_scores, attention_mask, finfo(attention_scores.dtype).min)
             attention_probs = paddle.cast(F.softmax(attn_weights, axis=-1, dtype=paddle.float32), dtype=input_dtype)
+        else:
+            attn_weights = masked_fill(attention_scores, attention_mask, finfo(attention_scores.dtype).min)
+            attention_probs = F.softmax(attn_weights, axis=-1)
 
         # [batch_size, num_heads, q_length, kv_length]
         attention_probs = self.attention_dropout(attention_probs)
@@ -486,7 +486,7 @@ class BloomAttention(nn.Layer):
         attention_probs_reshaped = attention_probs.reshape([batch_size * self.num_heads, q_length, kv_length])
 
         # matmul: [batch_size * num_heads, q_length, head_dim]
-        context_layer = paddle.bmm(attention_probs_reshaped, value_layer)
+        context_layer = paddle.matmul(attention_probs_reshaped, value_layer)
 
         # change view [batch_size, num_heads, q_length, head_dim]
         context_layer = self._merge_heads(context_layer)
@@ -674,14 +674,14 @@ class BloomPreTrainedModel(PretrainedModel):
 
         return mappings
 
-    def init_weights(self, module):
+    def _init_weights(self, layer):
         """Initialize the weights."""
-        if isinstance(module, (nn.Linear, nn.Embedding)):
-            module.weight.set_value(
-                paddle.tensor.normal(mean=0.0, std=self.config.initializer_range, shape=module.weight.shape)
+        if isinstance(layer, (nn.Linear, nn.Embedding)):
+            layer.weight.set_value(
+                paddle.tensor.normal(mean=0.0, std=self.config.initializer_range, shape=layer.weight.shape)
             )
-            if getattr(module, "bias", None) is not None:
-                module.weight.set_value(paddle.zeros(shape=module.weight.shape, dtype=paddle.get_default_dtype()))
+            if getattr(layer, "bias", None) is not None:
+                layer.weight.set_value(paddle.zeros(shape=layer.weight.shape, dtype=paddle.get_default_dtype()))
 
     def _set_gradient_checkpointing(self, module, value=False):
         if isinstance(module, BloomModel):
@@ -764,33 +764,35 @@ class BloomPreTrainedModel(PretrainedModel):
     @classmethod
     def _get_name_mappings(cls, config: BloomConfig) -> list[StateDictNameMapping]:
         hard_mapping = [
-            ["word_embeddings.weight", "word_embeddings.weight"],
-            ["word_embeddings_layernorm.weight", "word_embeddings_layernorm.weight"],
-            ["word_embeddings_layernorm.bias", "word_embeddings_layernorm.bias"],
-            ["ln_f.weight", "ln_f.weight"],
-            ["ln_f.bias", "ln_f.bias"],
+            "word_embeddings.weight",
+            "word_embeddings_layernorm.weight",
+            "word_embeddings_layernorm.bias",
+            "ln_f.weight",
+            "ln_f.bias",
         ]
         for i in range(config.n_layer):
             hard_mapping.extend(
                 [
-                    [f"h.{i}.input_layernorm.weight", f"h.{i}.input_layernorm.weight"],
-                    [f"h.{i}.input_layernorm.bias", f"h.{i}.input_layernorm.bias"],
+                    f"h.{i}.input_layernorm.weight",
+                    f"h.{i}.input_layernorm.bias",
                     [
                         f"h.{i}.self_attention.query_key_value.weight",
-                        f"h.{i}.self_attention.query_key_value.weight",
+                        None,
                         "transpose",
                     ],
-                    [f"h.{i}.self_attention.query_key_value.bias", f"h.{i}.self_attention.query_key_value.bias"],
-                    [f"h.{i}.self_attention.dense.weight", f"h.{i}.self_attention.dense.weight", "transpose"],
-                    [f"h.{i}.self_attention.dense.bias", f"h.{i}.self_attention.dense.bias"],
-                    [f"h.{i}.post_attention_layernorm.weight", f"h.{i}.post_attention_layernorm.weight"],
-                    [f"h.{i}.post_attention_layernorm.bias", f"h.{i}.post_attention_layernorm.bias"],
-                    [f"h.{i}.mlp.dense_h_to_4h.weight", f"h.{i}.mlp.dense_h_to_4h.weight", "transpose"],
-                    [f"h.{i}.mlp.dense_h_to_4h.bias", f"h.{i}.mlp.dense_h_to_4h.bias"],
-                    [f"h.{i}.mlp.dense_4h_to_h.weight", f"h.{i}.mlp.dense_4h_to_h.weight", "transpose"],
-                    [f"h.{i}.mlp.dense_4h_to_h.bias", f"h.{i}.mlp.dense_4h_to_h.bias"],
+                    f"h.{i}.self_attention.query_key_value.bias",
+                    [f"h.{i}.self_attention.dense.weight", None, "transpose"],
+                    f"h.{i}.self_attention.dense.bias",
+                    f"h.{i}.post_attention_layernorm.weight",
+                    f"h.{i}.post_attention_layernorm.bias",
+                    [f"h.{i}.mlp.dense_h_to_4h.weight", None, "transpose"],
+                    [f"h.{i}.mlp.dense_4h_to_h.weight", None, "transpose"],
+                    f"h.{i}.mlp.dense_h_to_4h.bias",
+                    f"h.{i}.mlp.dense_4h_to_h.bias",
                 ]
             )
+
+        init_name_mappings(hard_mapping)
 
         mappings = [StateDictNameMapping(*mapping, index=index) for index, mapping in enumerate(hard_mapping)]
         model_class_name = config.architectures[0]
@@ -801,10 +803,10 @@ class BloomPreTrainedModel(PretrainedModel):
                 mapping.target_name = "bloom." + mapping.target_name
 
         if model_class_name == "BloomForSequenceClassification":
-            mappings.append(StateDictNameMapping("score.weight", "score.weight", "transpose"))
+            mappings.append(StateDictNameMapping("score.weight", None, "transpose"))
         if model_class_name == "BloomForTokenClassification":
-            mappings.append(StateDictNameMapping("classifier.weight", "classifier.weight", "transpose"))
-            mappings.append(StateDictNameMapping("classifier.bias", "classifier.bias"))
+            mappings.append(StateDictNameMapping("classifier.weight", None, "transpose"))
+            mappings.append(StateDictNameMapping("classifier.bias"))
 
         return mappings
 
@@ -875,9 +877,6 @@ class BloomModel(BloomPreTrainedModel):
         self.ln_f = nn.LayerNorm(self.embed_dim, epsilon=config.layer_norm_epsilon)
 
         self.gradient_checkpointing = False
-
-        # # Initialize weights and apply final processing
-        # self.apply(self.init_weights)
 
     def get_input_embeddings(self):
         return self.word_embeddings
@@ -1001,8 +1000,7 @@ class BloomModel(BloomPreTrainedModel):
             seq_length_with_past = attention_mask.shape[-1]
 
         if attention_mask is None:
-            if input_ids is not None:
-                attention_mask = paddle.ones([batch_size, seq_length], dtype=paddle.get_default_dtype())
+            attention_mask = paddle.ones([batch_size, seq_length_with_past], dtype=paddle.get_default_dtype())
 
         alibi = build_alibi_tensor(attention_mask, self.config.n_head, dtype=hidden_states.dtype)
         # causal_mask = self._prepare_attn_mask(
@@ -1032,8 +1030,11 @@ class BloomModel(BloomPreTrainedModel):
             #     paddle.repeat_interleave(paddle.cast(causal_mask, "int32"), self.config.n_head, axis=0), "bool"
             # )
 
+        print("dtype", paddle.get_default_dtype())
+        save_tensor(alibi, 'alibi_{}'.format(seq_length_with_past))
+        save_tensor(causal_mask, 'causal_mask_{}'.format(seq_length_with_past))
         alibi = alibi.expand([batch_size, self.config.n_head // self.config.tensor_parallel_degree, seq_length, seq_length_with_past])
-        attn_mask = alibi + causal_mask * -60000.
+        attn_mask = alibi + causal_mask * -10000.
         hidden_states, presents = self.transformer_block(hidden_states, attn_mask=paddle.cast(attn_mask, dtype=hidden_states.dtype), caches=self.cache_kvs, time_step=paddle.increment(paddle.shape(attn_mask)[-1], -1) if is_decoder else None)
         # hidden_states, presents = self.transformer_block(hidden_states, attn_mask=attn_mask, caches=self.cache_kvs, time_step=paddle.to_tensor(attn_mask.shape[-1] - 1, dtype="int32", place=paddle.CPUPlace()) if is_decoder else None)
 
@@ -1188,7 +1189,6 @@ class BloomForPretraining(BloomPreTrainedModel):
         self.criterion = BloomPretrainingCriterion(
             pad_token_id=config.pad_token_id, tensor_parallel_degree=config.tensor_parallel_degree
         )
-        self.apply(self.init_weights)
         self.extra_parameters = [self.bloom.word_embeddings.weight]
 
     def forward(
@@ -1230,9 +1230,6 @@ class BloomForCausalLM(BloomPreTrainedModel):
             tensor_parallel_degree=config.tensor_parallel_degree,
             tensor_parallel_output=True,
         )
-
-        # # Initialize weights and apply final processing
-        # self.apply(self.init_weights)
 
     def get_output_embeddings(self):
         return self.lm_head
@@ -1363,9 +1360,6 @@ class BloomForSequenceClassification(BloomPreTrainedModel):
         self.bloom = BloomModel(config)
         self.score = nn.Linear(config.hidden_size, config.num_labels, bias_attr=False)
 
-        # Initialize weights and apply final processing
-        self.apply(self.init_weights)
-
     def forward(
         self,
         input_ids=None,
@@ -1484,9 +1478,6 @@ class BloomForTokenClassification(BloomPreTrainedModel):
             classifier_dropout = 0.1
         self.dropout = nn.Dropout(classifier_dropout)
         self.classifier = nn.Linear(config.hidden_size, config.num_labels)
-
-        # Initialize weights and apply final processing
-        self.apply(self.init_weights)
 
     def forward(
         self,
@@ -1956,16 +1947,14 @@ class BloomForGeneration(BloomPreTrainedModel):
         # if model_kwargs.get("attention_mask", None) is None:
         if attention_mask is None:
             # Init `attention_mask` depending on `pad_token_id`
-            attention_mask = self.prepare_attention_mask_for_generation(
+            model_kwargs["attention_mask"] = self.prepare_attention_mask_for_generation(
                 input_ids, pad_token_id, eos_token_id
             )
-        model_kwargs["attention_mask"] = attention_mask
 
-        if position_ids is None:
-            position_ids = paddle.arange(
+        if model_kwargs.get("position_ids", None) is None:
+            model_kwargs["position_ids"] = paddle.arange(
                 0, paddle.shape(model_kwargs["attention_mask"])[-1], dtype=input_ids.dtype
             ).unsqueeze(0)
-        model_kwargs["position_ids"] = position_ids
 
         self.is_encoder_decoder = False
 

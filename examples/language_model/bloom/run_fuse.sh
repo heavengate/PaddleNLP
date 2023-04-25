@@ -4,9 +4,9 @@
 # export NVIDIA_TF32_OVERRIDE=0
 
 
-export CUDA_VISIBLE_DEVICES=7
-python3.7 fuse_mt_generation.py --model=7b1_fp16 2>&1 | tee mt.txt
+# export CUDA_VISIBLE_DEVICES=7
+# python3.7 fuse_mt_generation.py --model=7b1_fp16 2>&1 | tee mt.txt
 
-# export CUDA_VISIBLE_DEVICES=4,5,6,7
-# export NCCL_ALGO=Tree
-# python3.7 -m paddle.distributed.launch --gpus "4,5,6,7" fuse_mt_generation.py --model=mp4_7b1 2>&1 | tee mt.txt
+export CUDA_VISIBLE_DEVICES=4,5,6,7
+export NCCL_ALGO=Tree
+python3.7 -m paddle.distributed.launch --gpus "4,5,6,7" fuse_mt_generation.py --model=mp4_7b1_fp16 2>&1 | tee mt.txt
