@@ -47,6 +47,8 @@ def left_padding(inputs, pad_id, padding="longest"):
         inputs[name] = res
 
     extend_filed("input_ids", max_length, pad_id)
+    print("max_length")
+    print(max_length)
     if "attention_mask" in inputs:
         extend_filed("attention_mask", max_length, 0)
     if "position_ids" in inputs:
@@ -87,6 +89,7 @@ class Predictor(object):
 
         # Merge the model splits to a total model
         merge_model_path = merge_model_parallel(args.model_path, config)
+        print(merge_model_path)
 
         # Load the model and parameter
         config.mp_degree = 1
@@ -99,16 +102,75 @@ class Predictor(object):
     def preprocess(self, input_text):
         inputs = self.tokenizer(input_text)
         inputs = left_padding(inputs, self.tokenizer.pad_token_id)
-
+        print(np.array(inputs["attention_mask"], dtype="int64"))
+        print("len")
+        print(inputs["input_ids"])
+        print(len(inputs["input_ids"][0]))
         input_map = {
-            "input_ids": np.array(inputs["input_ids"], dtype="int64"),
-            "attention_mask": np.array(inputs["attention_mask"], dtype="int64"),
+            "input_ids": paddle.to_tensor(np.array(inputs["input_ids"], dtype="int64")),
+            "attention_mask": paddle.to_tensor(np.array(inputs["attention_mask"], dtype="int64")),
+            "cache_kvs": paddle.to_tensor(np.full((24, 2, 1, 16, 1536, 96), 0.0, dtype='float16')),
+            # "cache_kv_1": paddle.to_tensor(np.full((2, 1, 16, 1536, 96), 0.0, dtype='float16')),
+            # "cache_kv_2": paddle.to_tensor(np.full((2, 1, 16, 1536, 96), 0.0, dtype='float16')),
+            # "cache_kv_3": paddle.to_tensor(np.full((2, 1, 16, 1536, 96), 0.0, dtype='float16')),
+            # "cache_kv_4": paddle.to_tensor(np.full((2, 1, 16, 1536, 96), 0.0, dtype='float16')),
+            # "cache_kv_5": paddle.to_tensor(np.full((2, 1, 16, 1536, 96), 0.0, dtype='float16')),
+            # "cache_kv_6": paddle.to_tensor(np.full((2, 1, 16, 1536, 96), 0.0, dtype='float16')),
+            # "cache_kv_7": paddle.to_tensor(np.full((2, 1, 16, 1536, 96), 0.0, dtype='float16')),
+            # "cache_kv_8": paddle.to_tensor(np.full((2, 1, 16, 1536, 96), 0.0, dtype='float16')),
+            # "cache_kv_9": paddle.to_tensor(np.full((2, 1, 16, 1536, 96), 0.0, dtype='float16')),
+            # "cache_kv_10": paddle.to_tensor(np.full((2, 1, 16, 1536, 96), 0.0, dtype='float16')),
+            # "cache_kv_11": paddle.to_tensor(np.full((2, 1, 16, 1536, 96), 0.0, dtype='float16')),
+            # "cache_kv_12": paddle.to_tensor(np.full((2, 1, 16, 1536, 96), 0.0, dtype='float16')),
+            # "cache_kv_13": paddle.to_tensor(np.full((2, 1, 16, 1536, 96), 0.0, dtype='float16')),
+            # "cache_kv_14": paddle.to_tensor(np.full((2, 1, 16, 1536, 96), 0.0, dtype='float16')),
+            # "cache_kv_15": paddle.to_tensor(np.full((2, 1, 16, 1536, 96), 0.0, dtype='float16')),
+            # "cache_kv_16": paddle.to_tensor(np.full((2, 1, 16, 1536, 96), 0.0, dtype='float16')),
+            # "cache_kv_17": paddle.to_tensor(np.full((2, 1, 16, 1536, 96), 0.0, dtype='float16')),
+            # "cache_kv_18": paddle.to_tensor(np.full((2, 1, 16, 1536, 96), 0.0, dtype='float16')),
+            # "cache_kv_19": paddle.to_tensor(np.full((2, 1, 16, 1536, 96), 0.0, dtype='float16')),
+            # "cache_kv_20": paddle.to_tensor(np.full((2, 1, 16, 1536, 96), 0.0, dtype='float16')),
+            # "cache_kv_21": paddle.to_tensor(np.full((2, 1, 16, 1536, 96), 0.0, dtype='float16')),
+            # "cache_kv_22": paddle.to_tensor(np.full((2, 1, 16, 1536, 96), 0.0, dtype='float16')),
+            # "cache_kv_23": paddle.to_tensor(np.full((2, 1, 16, 1536, 96), 0.0, dtype='float16')),
+            "encoder_seqlen": paddle.to_tensor(np.array([len(inputs["input_ids"][0])], dtype='int32')),
+            "decoder_seqlen": paddle.to_tensor(np.array([len(inputs["input_ids"][0])], dtype='int32')),
+            # "session_id": paddle.to_tensor(np.array([555], dtype='int32')),
         }
         return input_map
 
     def infer(self, input_map):
-        results = self.model(paddle.to_tensor(input_map["input_ids"]),
-                             paddle.to_tensor(input_map["attention_mask"]))
+        results = self.model(
+        input_map["input_ids"], 
+        input_map["attention_mask"], 
+        input_map["cache_kvs"], 
+        # input_map["cache_kv_1"], 
+        # input_map["cache_kv_2"], 
+        # input_map["cache_kv_3"], 
+        # input_map["cache_kv_4"], 
+        # input_map["cache_kv_5"], 
+        # input_map["cache_kv_6"], 
+        # input_map["cache_kv_7"], 
+        # input_map["cache_kv_8"], 
+        # input_map["cache_kv_9"], 
+        # input_map["cache_kv_10"], 
+        # input_map["cache_kv_11"], 
+        # input_map["cache_kv_12"], 
+        # input_map["cache_kv_13"], 
+        # input_map["cache_kv_14"], 
+        # input_map["cache_kv_15"], 
+        # input_map["cache_kv_16"], 
+        # input_map["cache_kv_17"], 
+        # input_map["cache_kv_18"], 
+        # input_map["cache_kv_19"], 
+        # input_map["cache_kv_20"], 
+        # input_map["cache_kv_21"], 
+        # input_map["cache_kv_22"], 
+        # input_map["cache_kv_23"],
+        input_map["encoder_seqlen"], 
+        input_map["decoder_seqlen"],
+        # input_map["session_id"],
+        )
         return results
 
     def postprocess(self, infer_data):
@@ -117,12 +179,14 @@ class Predictor(object):
             tokens = self.tokenizer.convert_ids_to_tokens(x)
             sentence = self.tokenizer.convert_tokens_to_string(tokens)
             result.append(sentence)
+        # print()
         out_dict = {"result": result}
         return out_dict
 
     def predict(self, texts):
         input_map = self.preprocess(texts)
         infer_result = self.infer(input_map)
+        print(infer_result)
         output = self.postprocess(infer_result)
         return output
 
@@ -132,8 +196,9 @@ if __name__ == "__main__":
     paddle.set_default_dtype("float16")
     predictor = Predictor(args)
     all_texts = [
-        "答案：年基准利率4.35%</s>上下文：从实际看,贷款的基本条件是: 一是中国大陆居民,年龄在60岁以下; 二是有稳定的住址和工作或经营地点; 三是有稳定的收入来源; 四是无不良信用记录,贷款用途不能作为炒股,赌博等行为; 五是具有完全民事行为能力。</s>在已知答案的前提下，问题：",
-        "答案：U系列</s>上下文：U系列是最好的，采用国际顶尖技术（由格力自主研发）双级变频压缩机，提高压缩机运转效率，制冷制热能力更强劲；1赫兹变频技术，使空调相当于一个15 W电灯泡，更加节能省电；送风面积广，风力大；生态风，净化空气。非常不错，现在国美在做活动，可以了解一下，问题：",
+        # "答案：年基准利率4.35%</s>上下文：从实际看,贷款的基本条件是: 一是中国大陆居民,年龄在60岁以下; 二是有稳定的住址和工作或经营地点; 三是有稳定的收入来源; 四是无不良信用记录,贷款用途不能作为炒股,赌博等行为; 五是具有完全民事行为能力。</s>在已知答案的前提下，问题：",
+        # "答案：U系列</s>上下文：U系列是最好的，采用国际顶尖技术（由格力自主研发）双级变频压缩机，提高压缩机运转效率，制冷制热能力更强劲；1赫兹变频技术，使空调相当于一个15 W电灯泡，更加节能省电；送风面积广，风力大；生态风，净化空气。非常不错，现在国美在做活动，可以了解一下，问题：",
+        "<U>高空观景公园</U><R><API>"
     ]
     batch_texts = batchfy_text(all_texts, args.batch_size)
     for bs, texts in enumerate(batch_texts):

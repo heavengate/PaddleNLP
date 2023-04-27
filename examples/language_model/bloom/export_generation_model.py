@@ -37,14 +37,14 @@ def parse_args():
     )
     parser.add_argument(
         "--model_path",
-        default="output_generate/splits_mp_01_sharding_01_500/",
+        default="output1/",
         type=str,
         required=False,
         help="Path of the trained model to be exported.",
     )
     parser.add_argument(
         "--output_path",
-        default="inference/bloom",
+        default="inference_cache_he/bloom",
         type=str,
         # required=True,
         help="The output file prefix used to save the exported inference model.",
@@ -61,7 +61,7 @@ def main():
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_path)
     config = BloomConfig.from_pretrained(args.model_path)
-
+    # paddle.set_default_dtype("float16")
     # Set the generaiton the hyperparameter
     config.max_dec_len = 20
     config.temperature = 0.5
@@ -82,12 +82,33 @@ def main():
     model.bloom.set_state_dict(paddle.load(merge_model_path))
 
     model.eval()
+    input_spec=[
+            paddle.static.InputSpec(shape=[None, None], dtype="int64")]
+    input_spec.append(
+        paddle.static.InputSpec(shape=[None, None], dtype="int64"),  # attention_mask
+    )
+
+
+    # for i in range(24):
+    #     input_spec.append(
+    #         paddle.static.InputSpec(shape=[2, None, config.num_attention_heads, 
+    #             1536, 96], dtype="float16"))
+
+    input_spec.append(
+        paddle.static.InputSpec(shape=[24, 2, None, config.num_attention_heads, 
+            1536, 96], dtype="float16"))
+
+    # input_spec.append(
+    #         paddle.static.InputSpec(shape=[1], dtype="int32"))
+    input_spec.append(
+            paddle.static.InputSpec(shape=[1], dtype="int32"))
+    input_spec.append(
+            paddle.static.InputSpec(shape=[1], dtype="int32"))
+
+
     model = paddle.jit.to_static(
         model,
-        input_spec=[
-            paddle.static.InputSpec(shape=[None, None], dtype="int64"),  # input_ids
-            paddle.static.InputSpec(shape=[None, None], dtype="int64"),  # attention_mask
-        ],
+        input_spec
     )
 
     # # Save converted static graph model

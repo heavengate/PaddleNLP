@@ -28,6 +28,8 @@ from paddle.autograd import PyLayer
 from paddle.distributed import fleet
 from paddle.distributed.fleet.utils import recompute
 from paddle.incubate.nn import FusedMultiTransformer
+# from custom_setup_ops import save_with_output
+import paddle.fluid.layers as layers
 from processor import (
     ForcedBOSTokenLogitsProcessor,
     ForcedEOSTokenLogitsProcessor,
@@ -50,6 +52,12 @@ BLOOM_PRETRAINED_MODEL_ARCHIVE_LIST = [
     "bigscience/bloom-560m",
 ]
 
+def save_tensor(tensor, name):
+    data = tensor.cpu().numpy()
+    with open("fuse_{}.txt".format(name), 'w') as wf:
+        wf.write("{}\n".format(str(data.shape)))
+        for d in data.reshape((-1)):
+            wf.write("{:.8f}\n".format(d))
 
 def parallel_matmul(lm_output, logit_weights, parallel_output=True):
     hcg = fleet.get_hybrid_communicate_group()
@@ -430,11 +438,11 @@ class BloomAttention(nn.Layer):
 
         # [batch_size * num_heads, q_length, kv_length]
         # we use `Tensor.baddbmm` instead of `paddle.baddbmm` as the latter isn't supported by TorchScript v1.11
-        print("alibi shape", alibi.shape)
+        #print("alibi shape", alibi.shape)
         attention_scores = baddbmm(
             alibi, batch1=query_layer, batch2=key_layer, beta=self.beta, alpha=self.inv_norm_factor
         )
-        print("attention_scores shape", attention_scores.shape)
+        #print("attention_scores shape", attention_scores.shape)
 
         # change view to [batch_size, num_heads, q_length, kv_length]
         # attention_scores = matmul_result.reshape([batch_size, self.num_heads, q_length, kv_length])
@@ -442,7 +450,7 @@ class BloomAttention(nn.Layer):
         # cast attention scores to fp32, compute scaled softmax and cast back to initial dtype - [batch_size, num_heads, q_length, kv_length]
         input_dtype = attention_scores.dtype
         # `float16` has a minimum value of -65504.0, whereas `bfloat16` and `float32` have a minimum value of `-3.4e+38`
-        print("attention_mask shape", attention_mask.shape)
+        #print("attention_mask shape", attention_mask.shape)
         if self.config.use_pure_fp16:
             with paddle.amp.auto_cast(False):
                 if input_dtype == paddle.float16:
@@ -795,8 +803,13 @@ class BloomModel(BloomPreTrainedModel):
                                     ffn2_weight_attrs=ffn2_weight_attrs,
                                     ffn2_bias_attrs=ffn2_bias_attrs
                                     )
-        # print("parameters", dict(self.transformer_block.named_parameters()).keys())
+        print(ffn1_weight_attrs)
+        print("parameters", dict(self.transformer_block.named_parameters()).keys())
         self.cache_kvs = []
+        self.encoder_len = 0
+        self.decoder_len = 0 
+        # self.#session_id = 0
+
 
         # Final Layer Norm
         self.ln_f = nn.LayerNorm(self.embed_dim, epsilon=config.layer_norm_epsilon)
@@ -867,9 +880,61 @@ class BloomModel(BloomPreTrainedModel):
         output_attentions=None,
         output_hidden_states=None,
         return_dict=None,
+        cache_kv_0=None, 
+        cache_kv_1=None, 
+        cache_kv_2=None, 
+        cache_kv_3=None, 
+        cache_kv_4=None, 
+        cache_kv_5=None, 
+        cache_kv_6=None, 
+        cache_kv_7=None, 
+        cache_kv_8=None, 
+        cache_kv_9=None, 
+        cache_kv_10=None, 
+        cache_kv_11=None, 
+        cache_kv_12=None, 
+        cache_kv_13=None, 
+        cache_kv_14=None, 
+        cache_kv_15=None, 
+        cache_kv_16=None, 
+        cache_kv_17=None, 
+        cache_kv_18=None, 
+        cache_kv_19=None,  
+        cache_kv_20=None, 
+        cache_kv_21=None, 
+        cache_kv_22=None, 
+        cache_kv_23=None,
+        encoder_seqlen=None, 
+        decoder_seqlen=None, 
+        #session_id=None,
         **kwargs,
     ) -> Union[Tuple[Tensor], BaseModelOutputWithPastAndCrossAttentions]:
-
+        self.cache_kvs = [
+            cache_kv_0,
+            cache_kv_1,
+            cache_kv_2,
+            cache_kv_3,
+            cache_kv_4,
+            cache_kv_5,
+            cache_kv_6,
+            cache_kv_7,
+            cache_kv_8,
+            cache_kv_9,
+            cache_kv_10,
+            cache_kv_11,
+            cache_kv_12,
+            cache_kv_13,
+            cache_kv_14,
+            cache_kv_15,
+            cache_kv_16,
+            cache_kv_17,
+            cache_kv_18,
+            cache_kv_19,
+            cache_kv_20,
+            cache_kv_21,
+            cache_kv_22,
+            cache_kv_23
+        ]
         is_decoder = kwargs.get("is_decoder", False)
         past_key_values = kwargs.get("cache", past_key_values)
 
@@ -902,7 +967,11 @@ class BloomModel(BloomPreTrainedModel):
             inputs_embeds = self.word_embeddings(input_ids)
 
         hidden_states = self.word_embeddings_layernorm(inputs_embeds)
-
+        
+       
+        self.encoder_len = encoder_seqlen
+        self.decoder_len = decoder_seqlen
+        # self.#session_id = #session_id
         # Transformer cache kv
         if len(self.cache_kvs) == 0:
             max_seq_len = 1024
@@ -939,32 +1008,36 @@ class BloomModel(BloomPreTrainedModel):
         #     past_key_values_length=past_key_values_length,
         # )
         if is_decoder:
-            causal_mask = 1.0 - attention_mask[:, None, :]
+            causal_mask = 1.0 - attention_mask[:, None, None, :]
         else:
             causal_mask = paddle.tensor.triu(
                     paddle.ones(
                         (paddle.shape(input_ids)[-1], paddle.shape(input_ids)[-1])),
                     diagonal=1)
-            causal_mask = paddle.logical_or(causal_mask, 1.0 - attention_mask[:, None, :])
+            causal_mask = paddle.logical_or(causal_mask, 1.0 - attention_mask[:, None, None, :]).cast("float32")
         if self.config.mp_rank > 0:
             block_size = self.config.n_head // self.config.mp_degree
             alibi = alibi[:, self.mp_rank * block_size : (self.mp_rank + 1) * block_size]
-            alibi = alibi.reshape([batch_size * block_size, 1, seq_length_with_past])
-            causal_mask = paddle.cast(
-                paddle.repeat_interleave(paddle.cast(causal_mask, "int32"), block_size, axis=0), "bool"
-            )
+            alibi = alibi.reshape([batch_size, block_size, 1, seq_length_with_past])
+            # causal_mask = paddle.cast(
+            #     paddle.repeat_interleave(paddle.cast(causal_mask, "int32"), block_size, axis=0), "bool"
+            # )
         else:
-            alibi = alibi.reshape([batch_size * self.config.n_head, 1, seq_length_with_past])
-            causal_mask = paddle.cast(
-                paddle.repeat_interleave(paddle.cast(causal_mask, "int32"), self.config.n_head, axis=0), "bool"
-            )
-
-        alibi = alibi.expand([batch_size * self.config.n_head, seq_length, seq_length_with_past])
-        print("alibi shape", alibi.shape)
+            alibi = alibi.reshape([batch_size, self.config.n_head, 1, seq_length_with_past])
+            # causal_mask = paddle.cast(
+            #     paddle.repeat_interleave(paddle.cast(causal_mask, "int32"), self.config.n_head, axis=0), "bool"
+            # )
+        alibi = alibi.expand([batch_size, self.config.n_head, seq_length, seq_length_with_past])
+        #print("alibi shape", alibi.shape)
         attn_mask = alibi + causal_mask * -60000.
-        print("attn_mask shape", attn_mask.shape)
-        # print("transformer input", hidden_states)
-        hidden_states, presents = self.transformer_block(hidden_states, attn_mask=paddle.cast(attn_mask, dtype=hidden_states.dtype), caches=self.cache_kvs, time_step=paddle.increment(paddle.shape(attn_mask)[-1], -1) if is_decoder else None)
+
+        hidden_states, presents = self.transformer_block(hidden_states,seq_lens=self.decoder_len if is_decoder else self.encoder_len,attn_mask=paddle.cast(attn_mask, dtype=hidden_states.dtype), caches=self.cache_kvs, time_step=paddle.increment(paddle.shape(attn_mask)[-1], -1) if is_decoder else None)
+        # hidden_states = hidden_states.reshape(hidden_states.shape)
+        if is_decoder:
+            paddle.increment(self.decoder_len, 1)
+        
+        # #seq_lens=self.decoder_len if is_decoder else self.encoder_len,
+
         # hidden_states, presents = self.transformer_block(hidden_states, attn_mask=attn_mask, caches=self.cache_kvs, time_step=paddle.to_tensor(attn_mask.shape[-1] - 1, dtype="int32", place=paddle.CPUPlace()) if is_decoder else None)
 
         # for i, (block, layer_past) in enumerate(zip(self.h, past_key_values)):
@@ -1001,26 +1074,30 @@ class BloomModel(BloomPreTrainedModel):
         #         all_self_attentions = all_self_attentions + (outputs[2 if use_cache else 1],)
 
         # Add last hidden state
-        hidden_states = self.ln_f(hidden_states)
+        
+        hidden_states = self.ln_f(hidden_states * 1)
 
         if output_hidden_states:
             all_hidden_states = all_hidden_states + (hidden_states,)
 
         if not return_dict:
             return tuple(v for v in [hidden_states, presents, all_hidden_states, all_self_attentions] if v is not None)
-
-        return BaseModelOutputWithPastAndCrossAttentions(
+        
+        return  BaseModelOutputWithPastAndCrossAttentions(
             last_hidden_state=hidden_states,
             past_key_values=presents,
             hidden_states=all_hidden_states,
             attentions=all_self_attentions,
         )
+        
 
     @paddle.no_grad()
     def set_state_dict(self, state_dict, use_structured_name=True):
-        print("FuseMT set_state_dict enter")
+        #print("FuseMT set_state_dict enter")
         new_state_dict = {}
         for k, v in state_dict.items():
+            print(k)
+            # print(v)
             if not k.startswith("bloom.h."):
                 new_state_dict[k] = v
                 continue
@@ -1572,10 +1649,68 @@ class BloomForGeneration(BloomPreTrainedModel):
 
         return input_ids, model_kwargs
 
-    def prepare_inputs_for_generation(self, input_ids, use_cache=False, cache=None, **kwargs):
+    def prepare_inputs_for_generation(self, input_ids, 
+        cache_kv_0,
+        cache_kv_1,
+        cache_kv_2,
+        cache_kv_3,
+        cache_kv_4,
+        cache_kv_5,
+        cache_kv_6,
+        cache_kv_7,
+        cache_kv_8,
+        cache_kv_9,
+        cache_kv_10,
+        cache_kv_11,
+        cache_kv_12,
+        cache_kv_13,
+        cache_kv_14,
+        cache_kv_15,
+        cache_kv_16,
+        cache_kv_17,
+        cache_kv_18,
+        cache_kv_19, 
+        cache_kv_20,
+        cache_kv_21,
+        cache_kv_22,
+        cache_kv_23,
+        encoder_seqlen,
+        decoder_seqlen,
+        #session_id,
+        use_cache=False, cache=None, **kwargs):
         # only last token for inputs_ids if cache is defined in kwargs
         attention_mask = kwargs.get("attention_mask", None)
-        return {"input_ids": input_ids, "attention_mask": attention_mask, "cache": cache}
+        return {"input_ids": input_ids, 
+                "attention_mask": attention_mask, 
+                "cache_kv_0": cache_kv_0,
+                "cache_kv_1": cache_kv_1,
+                "cache_kv_2": cache_kv_2,
+                "cache_kv_3": cache_kv_3,
+                "cache_kv_4": cache_kv_4,
+                "cache_kv_5": cache_kv_5,
+                "cache_kv_6": cache_kv_6,
+                "cache_kv_7": cache_kv_7,
+                "cache_kv_8": cache_kv_8,
+                "cache_kv_9": cache_kv_9,
+                "cache_kv_10": cache_kv_10,
+                "cache_kv_11": cache_kv_11,
+                "cache_kv_12": cache_kv_12,
+                "cache_kv_13": cache_kv_13,
+                "cache_kv_14": cache_kv_14,
+                "cache_kv_15": cache_kv_15,
+                "cache_kv_16": cache_kv_16,
+                "cache_kv_17": cache_kv_17,
+                "cache_kv_18": cache_kv_18,
+                "cache_kv_19": cache_kv_19,
+                "cache_kv_20": cache_kv_20,
+                "cache_kv_21": cache_kv_21,
+                "cache_kv_22": cache_kv_22,
+                "cache_kv_23": cache_kv_23,
+                "encoder_seqlen": encoder_seqlen,
+                "decoder_seqlen": decoder_seqlen,
+                # "#session_id": #session_id,
+                "cache": cache,
+        }
 
     def update_model_kwargs_for_generation(self, next_tokens, outputs, model_kwargs, is_encoder_decoder=False):
         # Update the model inputs during generation.
@@ -1613,6 +1748,33 @@ class BloomForGeneration(BloomPreTrainedModel):
     def sample(
         self,
         input_ids,
+        cache_kv_0,
+        cache_kv_1,
+        cache_kv_2,
+        cache_kv_3,
+        cache_kv_4,
+        cache_kv_5,
+        cache_kv_6,
+        cache_kv_7,
+        cache_kv_8,
+        cache_kv_9,
+        cache_kv_10,
+        cache_kv_11,
+        cache_kv_12,
+        cache_kv_13,
+        cache_kv_14,
+        cache_kv_15,
+        cache_kv_16,
+        cache_kv_17,
+        cache_kv_18,
+        cache_kv_19, 
+        cache_kv_20,
+        cache_kv_21,
+        cache_kv_22,
+        cache_kv_23,
+        encoder_seqlen,
+        decoder_seqlen,
+        #session_id,
         logits_processors,
         max_length,
         pad_token_id,
@@ -1676,7 +1838,35 @@ class BloomForGeneration(BloomPreTrainedModel):
         del model_kwargs["use_cache"]
 
         def _forward_(**args):
-            model_inputs = self.prepare_inputs_for_generation(input_ids, **args, **immutable)
+            model_inputs = self.prepare_inputs_for_generation(input_ids, 
+                                cache_kv_0,
+                                cache_kv_1,
+                                cache_kv_2,
+                                cache_kv_3,
+                                cache_kv_4,
+                                cache_kv_5,
+                                cache_kv_6,
+                                cache_kv_7,
+                                cache_kv_8,
+                                cache_kv_9,
+                                cache_kv_10,
+                                cache_kv_11,
+                                cache_kv_12,
+                                cache_kv_13,
+                                cache_kv_14,
+                                cache_kv_15,
+                                cache_kv_16,
+                                cache_kv_17,
+                                cache_kv_18,
+                                cache_kv_19, 
+                                cache_kv_20,
+                                cache_kv_21,
+                                cache_kv_22,
+                                cache_kv_23,
+                                encoder_seqlen,
+                                decoder_seqlen,
+                                #session_id,
+                                **args, **immutable)
             return self.bloom(**model_inputs, **immutable)
 
         def _post_process_(outputs, input_ids, cur_len, origin_len, scores, unfinished_flag, model_kwargs):
@@ -1729,8 +1919,8 @@ class BloomForGeneration(BloomPreTrainedModel):
                     probs = TopPProcess(probs, top_p, min_tokens_to_keep)
 
             if not self.use_topp_sampling:
-                # next_tokens = paddle.multinomial(probs)
-                _, next_tokens = paddle.topk(probs, 1)
+                # next_tokens = paddle.multinomial(paddle.cast(probs, dtype="float32"))
+                _, next_tokens = paddle.topk(paddle.cast(probs, dtype="float32"), 1)
 
             next_scores = paddle.index_sample(origin_probs, next_tokens)
 
@@ -1753,7 +1943,6 @@ class BloomForGeneration(BloomPreTrainedModel):
         # Note(GuoxiaWang):Pre-while call for inference, simulate a do while loop statement
         # the value in model_kwargs should be tensor before while loop
         outputs = _forward_(**model_kwargs)
-
         input_ids, scores, unfinished_flag, model_kwargs = _post_process_(
             outputs, input_ids, cur_len_gpu, origin_len_gpu, scores, unfinished_flag, model_kwargs
         )
@@ -1775,8 +1964,9 @@ class BloomForGeneration(BloomPreTrainedModel):
             # Note(GuoxiaWang): Remove outputs = _forward_(**model_kwargs)
             # and change it to pass directly to _post_process_ to avoid
             # closed-loop problem of dynamic-to-static model
+            outputs = _forward_(**model_kwargs)
             input_ids, scores, unfinished_flag, model_kwargs = _post_process_(
-                _forward_(**model_kwargs),
+                outputs,
                 input_ids,
                 cur_len_gpu,
                 origin_len_gpu,
@@ -1784,6 +1974,10 @@ class BloomForGeneration(BloomPreTrainedModel):
                 unfinished_flag,
                 model_kwargs,
             )
+
+            # batch_idx = paddle.fluid.layers.fill_constant(shape=[1], dtype="int32", value=#session_id, force_cpu=True)
+            # step_idx_init = paddle.fluid.layers.fill_constant(shape=[1],dtype="int64",value=cur_len,force_cpu=True)
+            # outs = save_with_output(input_ids, batch_idx, step_idx_init, "./outs", -1)
 
             if not self.inference:
                 cur_len += 1
@@ -1794,12 +1988,63 @@ class BloomForGeneration(BloomPreTrainedModel):
 
             if not paddle.any(unfinished_flag):
                 break
-
-        return model_kwargs["res"][:, origin_len:], scores
+        outs = paddle.stack([cache_kv_0,
+                cache_kv_1,
+                cache_kv_2,
+                cache_kv_3,
+                cache_kv_4,
+                cache_kv_5,
+                cache_kv_6,
+                cache_kv_7,
+                cache_kv_8,
+                cache_kv_9,
+                cache_kv_10,
+                cache_kv_11,
+                cache_kv_12,
+                cache_kv_13,
+                cache_kv_14,
+                cache_kv_15,
+                cache_kv_16,
+                cache_kv_17,
+                cache_kv_18,
+                cache_kv_19, 
+                cache_kv_20,
+                cache_kv_21,
+                cache_kv_22,
+                cache_kv_23],axis=0)
+        return model_kwargs["res"][:, origin_len:], scores, outs
 
     def forward(self,
                 input_ids=None,
                 attention_mask=None,
+                cache_kvs= None,
+                # cache_kv_0=None, 
+                # cache_kv_1=None, 
+                # cache_kv_2=None, 
+                # cache_kv_3=None, 
+                # cache_kv_4=None, 
+                # cache_kv_5=None, 
+                # cache_kv_6=None, 
+                # cache_kv_7=None, 
+                # cache_kv_8=None, 
+                # cache_kv_9=None, 
+                # cache_kv_10=None, 
+                # cache_kv_11=None, 
+                # cache_kv_12=None, 
+                # cache_kv_13=None, 
+                # cache_kv_14=None, 
+                # cache_kv_15=None, 
+                # cache_kv_16=None, 
+                # cache_kv_17=None, 
+                # cache_kv_18=None, 
+                # cache_kv_19=None,  
+                # cache_kv_20=None, 
+                # cache_kv_21=None, 
+                # cache_kv_22=None, 
+                # cache_kv_23=None, 
+                encoder_seqlen=None, 
+                decoder_seqlen=None, 
+                #session_id=None,
                 position_ids=None,
                 **model_kwargs):
 
@@ -1894,7 +2139,7 @@ class BloomForGeneration(BloomPreTrainedModel):
             diversity_rate=diversity_rate,
             repetition_penalty=repetition_penalty,
         )
-
+        cache_kv_tensor = [cache_kvs[i, ...] for i in range(self.config.n_layer)]
         if decode_strategy == "sampling":
             if num_return_sequences > 1:
                 input_ids, model_kwargs = self.expand_inputs_for_generation(
@@ -1903,6 +2148,57 @@ class BloomForGeneration(BloomPreTrainedModel):
 
             ret = self.sample(
                 input_ids,
+                cache_kv_tensor[0],
+                cache_kv_tensor[1],
+                cache_kv_tensor[2],
+                cache_kv_tensor[3],
+                cache_kv_tensor[4],
+                cache_kv_tensor[5],
+                cache_kv_tensor[6],
+                cache_kv_tensor[7],
+                cache_kv_tensor[8],
+                cache_kv_tensor[9],
+                cache_kv_tensor[10],
+                cache_kv_tensor[11],
+                cache_kv_tensor[12],
+                cache_kv_tensor[13],
+                cache_kv_tensor[14],
+                cache_kv_tensor[15],
+                cache_kv_tensor[16],
+                cache_kv_tensor[17],
+                cache_kv_tensor[18],
+                cache_kv_tensor[19],
+                cache_kv_tensor[20],
+                cache_kv_tensor[21],
+                cache_kv_tensor[22],
+                cache_kv_tensor[23],
+                # cache_kv_0,
+                # cache_kv_1,
+                # cache_kv_2,
+                # cache_kv_3,
+                # cache_kv_4,
+                # cache_kv_5,
+                # cache_kv_6,
+                # cache_kv_7,
+                # cache_kv_8,
+                # cache_kv_9,
+                # cache_kv_10,
+                # cache_kv_11,
+                # cache_kv_12,
+                # cache_kv_13,
+                # cache_kv_14,
+                # cache_kv_15,
+                # cache_kv_16,
+                # cache_kv_17,
+                # cache_kv_18,
+                # cache_kv_19, 
+                # cache_kv_20,
+                # cache_kv_21,
+                # cache_kv_22,
+                # cache_kv_23,
+                encoder_seqlen,
+                decoder_seqlen,
+                #session_id,
                 logits_processors,
                 max_len,
                 pad_token_id,
@@ -1914,4 +2210,5 @@ class BloomForGeneration(BloomPreTrainedModel):
             )
         else:
             raise ValueError(f"Not support {decode_strategy} strategy yet!")
+        # ret[0] = ret[0] * 2
         return ret
